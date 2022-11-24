@@ -30,3 +30,9 @@
 *.exe
 *.out
 *.app
+build/
+sdkconfig
+sdkconfig.old
+.DS_Store
+managed_components/
+dependencies.lock
