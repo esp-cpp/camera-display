@@ -9,6 +9,8 @@
 #include "driver/i2c.h"
 #include "nvs_flash.h"
 
+#include "jpeg_decoder.h"
+
 #include "format.hpp"
 #include "task.hpp"
 #include "tcp_socket.hpp"
@@ -58,12 +60,32 @@ extern "C" void app_main(void) {
   QueueHandle_t receive_queue = xQueueCreate(10, sizeof(Image));
   auto display_task_fn = [&receive_queue, &num_frames_displayed, &logger](auto& m, auto& cv) {
     static Image image;
+    // the original (max) image size is 1600x1200, but the S3 BOX has a resolution of 320x240
+    static constexpr size_t WIDTH = 320;
+    static constexpr size_t HEIGHT = 240;
+    static size_t out_img_buf_size = WIDTH * HEIGHT * 2; // two bytes per pixel (RGB565)
+    static unsigned char* out_img_buf = heap_caps_malloc(out_img_buf_size, MALLOC_CAP_8BIT | MALLOC_CAP_SPIRAM);
     // wait on the queue until we have an image ready to display
     if (xQueueReceive(receive_queue, &image, portMAX_DELAY) == pdPASS) {
       auto end = std::chrono::high_resolution_clock::now();
-      // TODO: parse the jpeg data into a byte array
+      // parse the jpeg data into a byte array
+      esp_jpeg_image_cfg_t jpeg_cfg = {
+        .indata = (uint8_t *)image.data,
+        .indata_size = image.num_bytes,
+        .outbuf = out_img_buf,
+        .outbuf_size = out_img_buf_size,
+        .out_format = JPEG_IMAGE_FORMAT_RGB565,
+        .out_scale = JPEG_IMAGE_SCALE_0,
+        .flags = {
+          .swap_color_bytes = 1,
+        }
+      };
+      esp_jpeg_image_output_t outimg;
+      esp_jpeg_decode(&jpeg_cfg, &outimg);
+
       // TODO: update the lvgl display
-      // now free the memory we allocated
+
+      // now free the memory we allocated when receiving the jpeg buffer
       free(image.data);
     }
   };
