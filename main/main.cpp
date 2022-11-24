@@ -85,12 +85,13 @@ extern "C" void app_main(void) {
 
       // TODO: update the lvgl display
 
+      num_frames_displayed += 1;
+
       // now free the memory we allocated when receiving the jpeg buffer
       free(image.data);
     }
   };
   // make the tcp_server
-  std::string ip_address = "192.168.1.23";
   size_t port = 8888;
   std::atomic<int> num_frames_received{0};
   espp::TcpSocket server_socket({.log_level=espp::Logger::Verbosity::WARN});
@@ -107,6 +108,8 @@ extern "C" void app_main(void) {
                  "    from source: {}:{}\n",
                  data, source.address, source.port);
       // TODO: get data / length and put it into the queue as a received image
+      // TODO: will need to put multiple packets together into a single image
+      //       based on header + length
       // only copy / allocate if there is space in the queue, otherwise just
       // discard this image.
       auto num_spots = uxQueueSpacesAvailable(receive_queue);
