@@ -68,8 +68,6 @@ void init_image(const uint8_t* data, size_t data_len, Image* image) {
   size_t jpeg_len = get_image_length(data);
   size_t img_bytes_received = std::min(data_len - data_offset, jpeg_len);
   image->num_bytes = jpeg_len;
-  image->offset = 0;
-  if (image->data) free(image->data);
   image->data = (uint8_t*)heap_caps_malloc(image->num_bytes, MALLOC_CAP_8BIT | MALLOC_CAP_SPIRAM);
   // add the bytes to our new array
   memcpy(image->data, &data[data_offset], img_bytes_received);
@@ -81,6 +79,8 @@ void update_image(const uint8_t* data, size_t data_len, Image* image) {
   memcpy(&image->data[image->offset], data, data_len);
   image->bytes_remaining -= data_len;
   image->offset += data_len;
+  fmt::print("Updated image offset = {}, remaining = {}/{}\n",
+             image->offset, image->bytes_remaining, image->num_bytes);
 }
 
 int find_header(std::basic_string_view<uint8_t> data) {
@@ -94,7 +94,7 @@ int find_header(std::basic_string_view<uint8_t> data) {
   return header_offset;
 }
 
-void handle_image_data(const std::vector<uint8_t> &data, QueueHandle_t image_queue) {
+int handle_image_data(std::basic_string_view<uint8_t> data, QueueHandle_t image_queue) {
   static bool has_seen_header = false;
   static Image image0, image1;
   static size_t image_index = 0;
@@ -103,46 +103,40 @@ void handle_image_data(const std::vector<uint8_t> &data, QueueHandle_t image_que
   // header + length. only copy / allocate if there is space in the queue,
   // otherwise just discard this image.
   if (!has_seen_header) {
-    auto header_offset = find_header(std::basic_string_view<uint8_t>(data.data(), data.size()));
-    if (header_offset < 0) return;
+    auto header_offset = find_header(data);
+    if (header_offset < 0) return -1;
     size_t length = data.size() - header_offset;
     init_image(&data[header_offset], length, image);
+    fmt::print("Got header at offset {}/{}, remaining = {}/{}\n",
+               header_offset, data.size(), image->bytes_remaining, image->num_bytes);
     // update state
     has_seen_header = true;
   } else {
     // we've seen the header, so the beginning of this packet must be the
     // continuation of the image.
     size_t num_bytes = std::min(image->bytes_remaining, (int)data.size());
+    fmt::print("continuation: offset = {}, data length = {}/{}, remaining = {}/{}\n",
+               image->offset, num_bytes, data.size(), image->bytes_remaining, image->num_bytes);
     update_image(data.data(), num_bytes, image);
-    fmt::print("continuation: offset = {}, data length = {}/{}, remaining = {}\n",
-               image->offset, num_bytes, data.size(), image->bytes_remaining);
-    if (image->bytes_remaining > 0) {
-      return;
-    }
-
-    // bytes_remaining is <= 0, so send the image
-    auto num_spots = uxQueueSpacesAvailable(image_queue);
-    if (num_spots > 0) {
-      xQueueSend(image_queue, image, 10 / portTICK_PERIOD_MS);
-      // num_frames_received += 1;
-      image_index = image_index ? 0 : 1;
-      image = image_index ? &image1 : &image0;
-    }
-
-    has_seen_header = false;
-    // we didn't use the whole packet finishing the image, so start a new one
-    size_t remaining = data.size() - num_bytes;
-    if (remaining) {
-      fmt::print("Still have another image, looking again!\n");
-      auto new_data = std::basic_string_view<uint8_t>(&data[num_bytes], remaining);
-      auto header_offset = find_header(new_data);
-      if (header_offset < 0) return;
-      size_t new_length = new_data.size() - header_offset;
-      init_image(&new_data[header_offset], new_length, image);
-      has_seen_header = true;
-      fmt::print("\tfound it!!\n");
-    }
   }
+
+  // return bytes remaining
+  if (image->bytes_remaining > 0) {
+    return image->bytes_remaining;
+  }
+
+  // bytes_remaining is <= 0, so send the image
+  auto num_spots = uxQueueSpacesAvailable(image_queue);
+  if (num_spots > 0) {
+    xQueueSend(image_queue, image, portMAX_DELAY);
+    image_index = image_index ? 0 : 1;
+    image = image_index ? &image1 : &image0;
+  } else {
+    free(image->data);
+    image->data = nullptr;
+  }
+  has_seen_header = false;
+  return -1;
 }
 
 extern "C" void app_main(void) {
@@ -210,13 +204,15 @@ extern "C" void app_main(void) {
   QueueHandle_t receive_queue = xQueueCreate(2, sizeof(Image));
 
   std::atomic<float> elapsed{0};
-  auto display_task_fn = [&receive_queue, &num_frames_displayed, &elapsed, &logger](auto& m, auto& cv) {
+  auto display_task_fn = [&receive_queue, &num_frames_displayed, &elapsed](auto& m, auto& cv) {
     // the original (max) image size is 1600x1200, but the S3 BOX has a resolution of 320x240
     // wait on the queue until we have an image ready to display
     static Image image;
     static JPEGDEC jpeg;
+    static espp::Logger logger({.tag = "Decoder", .level = espp::Logger::Verbosity::INFO});
 
     if (xQueueReceive(receive_queue, &image, portMAX_DELAY) == pdPASS) {
+      logger.info("Got image, length = {}", image.num_bytes);
       static auto start = std::chrono::high_resolution_clock::now();
       if (jpeg.openRAM(image.data, image.num_bytes, drawMCUs)) {
         logger.debug("Image size: {} x {}, orientation: {}, bpp: {}", jpeg.getWidth(),
@@ -237,42 +233,75 @@ extern "C" void app_main(void) {
       free(image.data);
     }
   };
-
-  // make the tcp_server
-  size_t port = 8888;
-  std::atomic<int> num_frames_received{0};
-  espp::TcpSocket server_socket({.log_level=espp::Logger::Verbosity::WARN});
-  auto server_task_config = espp::Task::Config{
-    .name = "TcpServer",
-    .callback = nullptr, // the callback is provided in the ReceiveConfig struct
-    .stack_size_bytes = 5 * 1024,
-  };
-  auto server_config = espp::TcpSocket::ReceiveConfig{
-    .port = port,
-    .buffer_size = 1024,
-    .on_receive_callback = [&receive_queue](auto& data, auto& source) -> auto {
-      handle_image_data(data, receive_queue);
-      // don't respond to client
-      return std::nullopt;
-    }
-  };
-  server_socket.start_receiving(server_task_config, server_config);
-
   // Start the display task
   logger.info("Starting display task");
   auto display_task = espp::Task::make_unique({
       .name = "Display Task",
       .callback = display_task_fn,
-      .stack_size_bytes = 5 * 1024,
+      .stack_size_bytes = 10 * 1024,
     });
   display_task->start();
+
+  // make the tcp_server
+  logger.info("Starting server task");
+  std::atomic<int> num_frames_received{0};
+  espp::TcpSocket server_socket({.log_level=espp::Logger::Verbosity::WARN});
+  static constexpr size_t port = 8888;
+  // bind
+  if (!server_socket.bind(port)){
+    return;
+  }
+  // listen
+  static constexpr size_t max_pending_connections = 1;
+  if (!server_socket.listen(max_pending_connections)) {
+    return;
+  }
+  auto server_task = espp::Task::make_unique({
+    .name = "TcpServer Task",
+    .callback = [&server_socket, &receive_queue, &num_frames_received](auto& m, auto& cv) {
+      static espp::Logger logger({.tag = "Receiver", .level = espp::Logger::Verbosity::INFO});
+      // ensure our socket is already closed
+      server_socket.close_accepted_socket();
+      // accept
+      if (!server_socket.accept()) {
+        logger.warn("Could not accept on server socket");
+        return;
+      }
+      // receive
+      auto client_socket = server_socket.get_accepted_socket();
+      static constexpr size_t max_buffer_size = 1024;
+      static uint8_t *data = (uint8_t*)heap_caps_malloc(max_buffer_size, MALLOC_CAP_8BIT | MALLOC_CAP_SPIRAM);
+      size_t receive_buffer_size = max_buffer_size;
+      while (true) {
+        memset(data, 0, max_buffer_size);
+        logger.info("Trying to receive {} B", receive_buffer_size);
+        auto num_bytes = server_socket.receive(client_socket, receive_buffer_size, data);
+        if (num_bytes < 0) {
+          // couldn't receive, let's see if we can break to try to accept again
+          break;
+        }
+        int bytes_remaining = handle_image_data(std::basic_string_view<uint8_t>(data, num_bytes), receive_queue);
+        if (bytes_remaining > 0) {
+          receive_buffer_size = std::min(bytes_remaining, (int)max_buffer_size);
+        } else {
+          num_frames_received += 1;
+          receive_buffer_size = max_buffer_size;
+        }
+      }
+    },
+    .stack_size_bytes = 10 * 1024,
+  });
+  server_task->start();
+
   auto start = std::chrono::high_resolution_clock::now();
   while (true) {
+    auto end = std::chrono::high_resolution_clock::now();
+    float current_time = std::chrono::duration<float>(end-start).count();
     fmt::print("[TM] {}\n", espp::TaskMonitor::get_latest_info());
-    fmt::print("Received {} frames\n", num_frames_received);
+    fmt::print("[{:.3f}] Received {} frames\n", current_time, num_frames_received);
     float disp_elapsed = elapsed;
     if (disp_elapsed > 1) {
-      fmt::print("Framerate: {} FPS\n", num_frames_displayed / disp_elapsed);
+      fmt::print("[{:.3f}] Framerate: {} FPS\n", current_time, num_frames_displayed / disp_elapsed);
     }
     std::this_thread::sleep_for(1s);
   }
