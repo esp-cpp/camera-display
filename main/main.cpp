@@ -79,8 +79,8 @@ void update_image(const uint8_t* data, size_t data_len, Image* image) {
   memcpy(&image->data[image->offset], data, data_len);
   image->bytes_remaining -= data_len;
   image->offset += data_len;
-  fmt::print("Updated image offset = {}, remaining = {}/{}\n",
-             image->offset, image->bytes_remaining, image->num_bytes);
+  // fmt::print("Updated image offset = {}, remaining = {}/{}\n",
+  //            image->offset, image->bytes_remaining, image->num_bytes);
 }
 
 int find_header(std::basic_string_view<uint8_t> data) {
@@ -107,16 +107,16 @@ int handle_image_data(std::basic_string_view<uint8_t> data, QueueHandle_t image_
     if (header_offset < 0) return -1;
     size_t length = data.size() - header_offset;
     init_image(&data[header_offset], length, image);
-    fmt::print("Got header at offset {}/{}, remaining = {}/{}\n",
-               header_offset, data.size(), image->bytes_remaining, image->num_bytes);
+    // fmt::print("Got header at offset {}/{}, remaining = {}/{}\n",
+    //            header_offset, data.size(), image->bytes_remaining, image->num_bytes);
     // update state
     has_seen_header = true;
   } else {
     // we've seen the header, so the beginning of this packet must be the
     // continuation of the image.
     size_t num_bytes = std::min(image->bytes_remaining, (int)data.size());
-    fmt::print("continuation: offset = {}, data length = {}/{}, remaining = {}/{}\n",
-               image->offset, num_bytes, data.size(), image->bytes_remaining, image->num_bytes);
+    // fmt::print("continuation: offset = {}, data length = {}/{}, remaining = {}/{}\n",
+    //            image->offset, num_bytes, data.size(), image->bytes_remaining, image->num_bytes);
     update_image(data.data(), num_bytes, image);
   }
 
@@ -212,7 +212,7 @@ extern "C" void app_main(void) {
     static espp::Logger logger({.tag = "Decoder", .level = espp::Logger::Verbosity::INFO});
 
     if (xQueueReceive(receive_queue, &image, portMAX_DELAY) == pdPASS) {
-      logger.info("Got image, length = {}", image.num_bytes);
+      logger.debug("Got image, length = {}", image.num_bytes);
       static auto start = std::chrono::high_resolution_clock::now();
       if (jpeg.openRAM(image.data, image.num_bytes, drawMCUs)) {
         logger.debug("Image size: {} x {}, orientation: {}, bpp: {}", jpeg.getWidth(),
@@ -264,7 +264,6 @@ extern "C" void app_main(void) {
       server_socket.close_accepted_socket();
       // accept
       if (!server_socket.accept()) {
-        logger.warn("Could not accept on server socket");
         return;
       }
       // receive
@@ -274,7 +273,7 @@ extern "C" void app_main(void) {
       size_t receive_buffer_size = max_buffer_size;
       while (true) {
         memset(data, 0, max_buffer_size);
-        logger.info("Trying to receive {} B", receive_buffer_size);
+        logger.debug("Trying to receive {} B", receive_buffer_size);
         auto num_bytes = server_socket.receive(client_socket, receive_buffer_size, data);
         if (num_bytes < 0) {
           // couldn't receive, let's see if we can break to try to accept again
