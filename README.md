@@ -5,6 +5,8 @@ Example for [ESP32-S3-BOX](https://www.adafruit.com/product/5290)
 from the [camera-streamer app](https://github.com/esp-cpp/camera-streamer) over
 WiFi and displays them on the screen.
 
+https://user-images.githubusercontent.com/213467/204307381-4e688bc8-4064-430b-baff-2e57d0f8d92a.mp4
+
 ## Hardware
 
 This sample is designed to run on the ESP32-S3-BOX which has a 320x240 LCD (over
