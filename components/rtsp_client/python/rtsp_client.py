@@ -66,6 +66,171 @@ huffman_table = [
 
 ]
 
+class RtpPacket:
+    def __init__(self, data):
+        self.data = data
+        rtp_info, payload_and_marker, self.sequence_number, self.timestamp, self.ssrc = struct.unpack('>BBHII', data[:12])
+        self.version = (rtp_info & 0b11000000) >> 6
+        self.padding = (rtp_info & 0b00100000) >> 5
+        self.extension = (rtp_info & 0b00010000) >> 4
+        self.csrc_count = rtp_info & 0b00001111
+        self.payload_type = (payload_and_marker & 0x7F)
+        self.marker = (payload_and_marker & 0b10000000) >> 7
+
+        # self.version = (data[0] & 0b11000000) >> 6
+        # self.padding = (data[0] & 0b00100000) >> 5
+        # self.extension = (data[0] & 0b00010000) >> 4
+        # self.csrc_count = data[0] & 0b00001111
+        # self.marker = (data[1] & 0b10000000) >> 7
+        # self.payload_type = data[1] & 0b01111111
+        # self.sequence_number = data[2] * 256 + data[3]
+        # self.timestamp = data[4] * 256 * 256 * 256 + data[5] * 256 * 256 + data[6] * 256 + data[7]
+        # self.ssrc = data[8] * 256 * 256 * 256 + data[9] * 256 * 256 + data[10] * 256 + data[11]
+
+        self.payload = data[12:]
+
+    def __repr__(self):
+        return f"RtpPacket(payload_type={self.payload_type}, marker={self.marker}, sequence_number={self.sequence_number}, timestamp={self.timestamp}, ssrc={self.ssrc})"
+
+    def get_payload(self):
+        return self.payload
+
+    def get_payload_type(self):
+        return self.payload_type
+
+    def get_marker(self):
+        return self.marker
+
+class RtpJpegPacket(RtpPacket):
+    def __init__(self, data):
+        super().__init__(data)
+        rtp_payload = self.get_payload()
+        self.type_specific, self.frag_offset, self.frag_type, self.q, self.width, self.height = struct.unpack('>B3s BBBB', rtp_payload[:8])
+        self.frag_offset = int.from_bytes(self.frag_offset, byteorder='big')
+        self.q = int(self.q)
+        self.width = int(self.width) * 8
+        self.height = int(self.height) * 8
+
+        self.jpeg_data = rtp_payload[8:]
+
+        if 128 <= self.q <= 255:
+            # bytes 8,9,10 are all 0 based on CStreamer.cpp lines 109-111
+            num_quant_bytes = rtp_payload[11]
+            quant_size = 64
+            expected_quant_bytes = 2 * quant_size
+            if num_quant_bytes != expected_quant_bytes:
+                print(f"Unexpected quant bytes: {num_quant_bytes}, expected {expected_quant_bytes}")
+            else:
+                q0_offset = 12
+                q1_offset = q0_offset + quant_size
+                q1_end = q1_offset + quant_size
+                self.q0 = rtp_payload[q0_offset:q1_offset]
+                self.q1 = rtp_payload[q1_offset:q1_end]
+                self.jpeg_data = rtp_payload[q1_end:]
+
+    def __repr__(self):
+        return f"RtpJpegPacket(payload_type={self.payload_type}, marker={self.marker}, sequence_number={self.sequence_number}, timestamp={self.timestamp}, ssrc={self.ssrc}, width={self.width}, height={self.height}, q={self.q}, frag_type={self.frag_type}, frag_offset={self.frag_offset})"
+
+    def get_width(self):
+        return self.width
+
+    def get_frag_offset(self):
+        return self.frag_offset
+
+    def get_frag_type(self):
+        return self.frag_type
+
+    def get_height(self):
+        return self.height
+
+    def get_q0(self):
+        return self.q0
+
+    def get_q1(self):
+        return self.q1
+
+    def get_jpeg_data(self):
+        return self.jpeg_data
+
+
+class JpegHeader:
+    def __init__(self, width, height, q0_quantization_table, q1_quantization_table):
+        self.width = width
+        self.height = height
+
+        self.data = io.BytesIO()
+        self.data.write(b'\xFF\xD8')  # Start Of Image (SOI) marker
+        # JFIF APP0 marker
+        jfif_app0_marker = bytearray([
+            0xFF, 0xE0,  # APP0 marker
+            0x00, 0x10,  # Length (16 bytes)
+            0x4A, 0x46, 0x49, 0x46, 0x00,  # JFIF identifier
+            0x01, 0x02,  # JFIF version 1.2
+            0x01,        # Units: DPI
+            0x00, 0x48,  # Xdensity: 72 DPI
+            0x00, 0x48,  # Ydensity: 72 DPI
+            0x00, 0x00   # No thumbnail (width 0, height 0)
+        ])
+        self.data.write(jfif_app0_marker)
+
+        # Quantization table (DQT) marker for luminance
+        # marker(0xFFDB), size (0x0043 = 67), index (0x00)
+        self.data.write(b'\xFF\xDB\x00\x43\x00')
+        self.data.write(bytearray(q0_quantization_table))
+
+        # Quantization table (DQT) marker for chrominance
+        # marker(0xFFDB), size (0x0043 = 67), index (0x01)
+        self.data.write(b'\xFF\xDB\x00\x43\x01')
+        self.data.write(bytearray(q1_quantization_table))
+
+        # Frame header (SOF0) marker
+        sof0_marker = bytearray([
+            0xFF, 0xC0,  # SOF0 marker
+            0x00, 0x11,  # Length (17 bytes)
+            0x08,        # Data precision: 8 bits
+            *self.height.to_bytes(2, 'big'), # 0x01, 0xE0,  # Image height: 240
+            *self.width.to_bytes(2, 'big'), # 0x01, 0xE0,  # Image width: 240
+            0x03,        # Number of components: 3 (YCbCr)
+            0x01, 0x21, 0x00,  # Component 1 (Y):  horizontal sampling factor = 2, vertical sampling factor = 1, quantization table ID = 0
+            0x02, 0x11, 0x01,  # Component 2 (Cb): horizontal sampling factor = 1, vertical sampling factor = 1, quantization table ID = 1
+            0x03, 0x11, 0x01   # Component 3 (Cr): horizontal sampling factor = 1, vertical sampling factor = 1, quantization table ID = 1
+        ])
+        self.data.write(sof0_marker)
+
+        self.data.write(bytes(huffman_table))
+
+        # Scan header (SOS) marker
+        # marker(0xFFDA), size of SOS (0x000C), num components(0x03),
+        # component specification parameters,
+        # spectral selection (0x003F),
+        # successive appromiation parameters (0x00)
+        self.data.write(b'\xFF\xDA\x00\x0C\x03\x01\x00\x02\x11\x03\x11\x00\x3F\x00')
+
+    def __repr__(self):
+        return f"JpegHeader(width={self.width}, height={self.height})"
+
+    def get_data(self):
+        return self.data.getvalue()
+
+class JpegFrame:
+    def __init__(self, RtpJpegPacket):
+        self.jpeg_header = JpegHeader(RtpJpegPacket.get_width(), RtpJpegPacket.get_height(), RtpJpegPacket.get_q0(), RtpJpegPacket.get_q1())
+        self.jpeg_data = RtpJpegPacket.get_jpeg_data()
+
+    def __repr__(self):
+        return f"JpegFrame(width={self.jpeg_header.width}, height={self.jpeg_header.height}, jpeg_data={self.jpeg_data})"
+
+    def add_packet(self, rtp_jpeg_packet):
+        self.jpeg_data += rtp_jpeg_packet.get_jpeg_data()
+
+    def get_data(self):
+        data = io.BytesIO()
+        data.write(self.jpeg_header.get_data())
+        data.write(self.jpeg_data)
+        data.write(b'\xFF\xD9')  # End Of Image (EOI) marker
+        return data.getvalue()
+
+
 class RtspClient:
     def __init__(self, server, port):
         self.server = server
@@ -146,132 +311,40 @@ class RtspClient:
     def handle_rtp_packet(self):
         # for this example we'll show the received video stream in an opencv
         # window
-        buf = bytearray()
         cv2.namedWindow('MJPEG Stream', cv2.WINDOW_NORMAL)
-
+        jpeg_frame = None
         while True:
             # Process RTP packet in rtp_data
             rtp_data, addr = self.rtp_socket.recvfrom(8192)
-            print(f"received rtp packet, len={len(rtp_data)}")
-            rtp_header = rtp_data[:12]
-            rtp_payload = rtp_data[12:] # NAL unit
+            rtp_packet = RtpJpegPacket(rtp_data)
+            jpeg_data = rtp_packet.get_jpeg_data()
 
-
-            version, payload_and_marker, seq, timestamp, ssrc = struct.unpack('>BBHII', rtp_header)
-            payload_type = (payload_and_marker & 0x7F)
-            marker_bit = (payload_and_marker & 0b10000000) >> 7
-
-            # print("\tRTP Header:", [hex(x) for x in list(rtp_header)])
-            print(f"\tMarker: {marker_bit}, Payload Type: {payload_type}")
-            # print(f"Sequence number: {seq}, Timestamp: {timestamp}, SSRC: {ssrc}")
-
-            jpeg_header = rtp_payload[:8]
-            type_specific, frag_offset, frag_type, q, width, height = struct.unpack('>B3s BBBB', rtp_payload[:8])
-            frag_offset = int.from_bytes(frag_offset, byteorder='big')
-            q = int(q)
-            width = int(width) * 8
-            height = int(height) * 8
-
-            # print("\tJPEG header:", [hex(x) for x in list(jpeg_header)])
-            print(f"\tJpeg image: width={width}, height={height}, type_spec={type_specific}, q={q}, frag_type={frag_type}, frag_offset={frag_offset}")
-
-            jpeg_data = rtp_payload[8:]
-
-            if 64 <= frag_type <= 127:
-                # there must be a restart marker header
-                print("\tHave restart header")
-                restart_header = rtp_payload[8:12]
-                restart_interval = int((restart_header[0] << 8) | restart_header[1])
-                f_bit = True if restart_header[2] & 0x80 else False
-                l_bit = True if restart_header[2] & 0x80 else False
-                restart_count = int(((restart_header[2] & 0x3F) << 8) | restart_header[3])
-                print(f"\tRestart interval={restart_interval}, f={f_bit}, l={l_bit}, restart_count={restart_count}")
-                jpeg_data = rtp_payload[12:]
-
-            if 128 <= q <= 255:
-                print("\tGetting quantization table header")
-                # bytes 8,9,10 are all 0 based on CStreamer.cpp lines 109-111
-                num_quant_bytes = rtp_payload[11]
-                quant_size = 64
-                expected_quant_bytes = 2 * quant_size
-                if num_quant_bytes != expected_quant_bytes:
-                    print(f"Unexpected quant bytes: {num_quant_bytes}, expected {expected_quant_bytes}")
-                else:
-                    q0_offset = 12
-                    q1_offset = q0_offset + quant_size
-                    q1_end = q1_offset + quant_size
-                    q0 = rtp_payload[q0_offset:q1_offset]
-                    q1 = rtp_payload[q1_offset:q1_end]
-                    jpeg_data = rtp_payload[q1_end:]
-
+            frag_offset = rtp_packet.get_frag_offset()
             if frag_offset == 0:
-                # Create a binary stream to construct the JPEG header
-                jpeg_header = io.BytesIO()
+                # this is the first packet of a new frame, so we need to
+                # create a new JpegFrame object
+                jpeg_frame = JpegFrame(rtp_packet)
+            elif jpeg_frame is not None:
+                # this is a continuation of a previous frame, so we need to
+                # add the data to the existing JpegFrame object
+                jpeg_frame.add_packet(rtp_packet)
+            else:
+                # we don't have a JpegFrame object yet, so we can't do
+                # anything with this packet
+                print(f"Received a packet with frag_offset = {frag_offset} > 0, but no JpegFrame object exists yet")
+                continue
 
-                # Start Of Image (SOI) marker
-                jpeg_header.write(b'\xFF\xD8')
-
-                jfif_app0_marker = bytearray([
-                    0xFF, 0xE0,  # APP0 marker
-                    0x00, 0x10,  # Length (16 bytes)
-                    0x4A, 0x46, 0x49, 0x46, 0x00,  # JFIF identifier
-                    0x01, 0x02,  # JFIF version 1.2
-                    0x01,        # Units: DPI
-                    0x00, 0x48,  # Xdensity: 72 DPI
-                    0x00, 0x48,  # Ydensity: 72 DPI
-                    0x00, 0x00   # No thumbnail (width 0, height 0)
-                ])
-                jpeg_header.write(jfif_app0_marker)
-
-                # Quantization table (DQT) marker for luminance
-                # marker(0xFFDB), size (0x0043 = 67), index (0x00)
-                jpeg_header.write(b'\xFF\xDB\x00\x43\x00')
-                jpeg_header.write(bytearray(q0))
-
-                # Quantization table (DQT) marker for chrominance
-                # marker(0xFFDB), size (0x0043 = 67), index (0x01)
-                jpeg_header.write(b'\xFF\xDB\x00\x43\x01')
-                jpeg_header.write(bytearray(q1))
-
-                # Frame header (SOF0) marker
-                sof0_marker = bytearray([
-                    0xFF, 0xC0,  # SOF0 marker
-                    0x00, 0x11,  # Length (17 bytes)
-                    0x08,        # Data precision: 8 bits
-                    *height.to_bytes(2, 'big'), # 0x01, 0xE0,  # Image height: 240
-                    *width.to_bytes(2, 'big'), # 0x01, 0xE0,  # Image width: 240
-                    0x03,        # Number of components: 3 (YCbCr)
-                    0x01, 0x21, 0x00,  # Component 1 (Y):  horizontal sampling factor = 2, vertical sampling factor = 1, quantization table ID = 0
-                    0x02, 0x11, 0x01,  # Component 2 (Cb): horizontal sampling factor = 1, vertical sampling factor = 1, quantization table ID = 1
-                    0x03, 0x11, 0x01   # Component 3 (Cr): horizontal sampling factor = 1, vertical sampling factor = 1, quantization table ID = 1
-                ])
-                jpeg_header.write(sof0_marker)
-
-                jpeg_header.write(bytes(huffman_table))
-
-                # Scan header (SOS) marker
-                # marker(0xFFDA), size of SOS (0x000C), num components(0x03),
-                # component specification parameters,
-                # spectral selection (0x003F),
-                # successive appromiation parameters (0x00)
-                jpeg_header.write(b'\xFF\xDA\x00\x0C\x03\x01\x00\x02\x11\x03\x11\x00\x3F\x00')
-
-                jpeg_header_bytes = bytearray(jpeg_header.getvalue())
-
-                print(f"\tAdded header of length {len(jpeg_header_bytes)}")
-
-                buf = jpeg_header_bytes
-
-            # make sure we add the actual jpeg segment data
-            buf.extend(jpeg_data)
-
+            # check if this is the last packet of the frame
+            # (the last packet will have the M bit set)
+            marker_bit = rtp_packet.get_marker()
             if marker_bit:
-                # Add the JPEG end marker (EOI)
-                buf.extend(b'\xFF\xD9')
-                print(f"Decoding image size={len(buf)}")
+                # this is the last packet of the frame, so we can decode
+                # the frame and show it in the opencv window
+                buf = jpeg_frame.get_data()
+                # print(f"Decoding image size={len(buf)}")
                 frame = cv2.imdecode(np.frombuffer(buf, dtype=np.uint8), cv2.IMREAD_COLOR)
                 if frame is not None:
-                    print(f"Decoded frame: {frame.shape}\n\n")
+                    # print(f"Decoded frame: {frame.shape}\n\n")
                     # our images are flipped vertically, fix it :)
                     # 0 = vertical, 1 = horizontal, -1 = both vertical and horiztonal
                     frame = cv2.flip(frame, 0)
