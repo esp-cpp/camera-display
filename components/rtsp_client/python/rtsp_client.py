@@ -317,7 +317,10 @@ class RtspClient:
             # Process RTP packet in rtp_data
             rtp_data, addr = self.rtp_socket.recvfrom(8192)
             rtp_packet = RtpJpegPacket(rtp_data)
-            jpeg_data = rtp_packet.get_jpeg_data()
+
+            # TODO: handle out of order packets
+            #       (packets whose seq_num is not equal to the previous packet's
+            #       seq_num)
 
             frag_offset = rtp_packet.get_frag_offset()
             if frag_offset == 0:
