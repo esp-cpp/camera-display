@@ -13,7 +13,7 @@ add_compile_definitions(BOARD_HAS_PSRAM)
 
 set(
   COMPONENTS
-  "main esptool_py esp_psram jpegdec task format monitor display_drivers wifi socket"
+  "main esptool_py esp_psram jpegdec task format monitor display_drivers wifi socket rtsp_client"
   CACHE STRING
   "List of components to include"
 )
