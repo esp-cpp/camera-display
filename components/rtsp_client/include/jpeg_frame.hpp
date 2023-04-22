@@ -17,11 +17,22 @@ namespace espp {
     /// data to the frame.
     ///
     /// @param packet The packet to parse.
-    explicit JpegFrame(const RtpJpegPacket& packet) {
-      // parse the header
-      header_ = std::make_unique<JpegHeader>(packet.get_width(), packet.get_height(), packet.get_q_table(0), packet.get_q_table(1));
+    explicit JpegFrame(const RtpJpegPacket& packet)
+      : header_(packet.get_width(), packet.get_height(), packet.get_q_table(0), packet.get_q_table(1)) {
       // add the jpeg data
       scans_.push_back(packet.get_jpeg_data());
+    }
+
+    /// Get the width of the frame.
+    /// @return The width of the frame.
+    int get_width() const {
+      return header_.get_width();
+    }
+
+    /// Get the height of the frame.
+    /// @return The height of the frame.
+    int get_height() const {
+      return header_.get_height();
     }
 
     /// Append a RtpJpegPacket to the frame.
@@ -54,7 +65,7 @@ namespace espp {
     /// @note This method must be called before get_data() can be used.
     /// @note This method should only be called once.
     void serialize() {
-      auto header_data = header_->get_data();
+      auto header_data = header_.get_data();
       auto scan_bytes = 0;
       for (auto& scan : scans_) {
         scan_bytes += scan.size();
@@ -86,7 +97,7 @@ namespace espp {
     }
 
   protected:
-    std::unique_ptr<JpegHeader> header_;
+    JpegHeader header_;
     std::vector<std::string_view> scans_;
     std::vector<char> data_;
   };

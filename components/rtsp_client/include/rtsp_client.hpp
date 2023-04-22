@@ -90,6 +90,7 @@ namespace espp {
         .wait_for_response = true,
         .response_size = 1024,
         .on_response_callback = [&response](auto &response_vector) { response.assign(response_vector.begin(), response_vector.end()); },
+        .response_timeout = std::chrono::seconds(5),
       };
       // NOTE: now this call blocks until the response is received
       logger_.debug("Request:\n{}", request);

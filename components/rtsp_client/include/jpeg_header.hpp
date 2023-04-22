@@ -23,6 +23,18 @@ namespace espp {
 
     ~JpegHeader() {}
 
+    /// Get the image width.
+    /// @return The image width in pixels.
+    int get_width() const {
+      return width_;
+    }
+
+    /// Get the image height.
+    /// @return The image height in pixels.
+    int get_height() const {
+      return height_;
+    }
+
     /// Get the JPEG header data.
     /// @return The JPEG header data.
     std::string_view get_data() {

@@ -44,12 +44,13 @@ namespace espp {
     static constexpr int Q_TABLE_SIZE = 64;
 
     void parse_mjpeg_header() {
-      int offset = RTP_HEADER_SIZE + MJPEG_HEADER_SIZE;
+      int offset = RTP_HEADER_SIZE;
       type_specific_ = packet_[offset];
-      offset_ = (packet_[offset + 1] << 8) | packet_[offset + 2];
-      q_ = packet_[offset + 3];
-      width_ = (packet_[offset + 4] << 8) | packet_[offset + 5];
-      height_ = (packet_[offset + 6] << 8) | packet_[offset + 7];
+      offset_ = (packet_[offset + 1] << 16) | (packet_[offset + 2] << 8) | packet_[offset + 3];
+      frag_type_ = packet_[offset + 4];
+      q_ = packet_[offset + 5];
+      width_ = packet_[offset + 6] * 8;
+      height_ = packet_[offset + 7] * 8;
 
       // If the Q value is between 128 and 256, then the packet contains
       // quantization tables.
@@ -67,6 +68,7 @@ namespace espp {
 
     int type_specific_;
     int offset_;
+    int frag_type_;
     int q_;
     int width_;
     int height_;
