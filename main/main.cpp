@@ -94,7 +94,7 @@ extern "C" void app_main(void) {
   std::atomic<int> num_frames_displayed{0};
 
   std::atomic<float> elapsed{0};
-  auto display_task_fn = [&jpeg_mutex, &jpeg_cv, &jpeg_frames, &num_frames_displayed, &elapsed](auto& m, auto& cv) {
+  auto display_task_fn = [&jpeg_mutex, &jpeg_cv, &jpeg_frames, &num_frames_displayed, &elapsed](auto& m, auto& cv) -> bool {
     // the original (max) image size is 1600x1200, but the S3 BOX has a resolution of 320x240
     // wait on the queue until we have an image ready to display
     static JPEGDEC jpeg;
@@ -126,6 +126,8 @@ extern "C" void app_main(void) {
     auto end = std::chrono::high_resolution_clock::now();
     elapsed = std::chrono::duration<float>(end-start).count();
     num_frames_displayed += 1;
+    // signal that we do not want to stop the task
+    return false;
   };
   // Start the display task
   logger.info("Starting display task");
@@ -146,6 +148,9 @@ extern "C" void app_main(void) {
       .on_jpeg_frame = [&jpeg_mutex, &jpeg_cv, &jpeg_frames, &num_frames_received](std::unique_ptr<espp::JpegFrame> jpeg_frame) {
         {
           std::lock_guard<std::mutex> lock(jpeg_mutex);
+          if (jpeg_frames.size() >= MAX_JPEG_FRAMES) {
+            jpeg_frames.pop_front();
+          }
           jpeg_frames.push_back(std::move(jpeg_frame));
         }
         jpeg_cv.notify_all();
