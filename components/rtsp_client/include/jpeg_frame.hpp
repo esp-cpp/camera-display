@@ -19,8 +19,10 @@ namespace espp {
     /// @param packet The packet to parse.
     explicit JpegFrame(const RtpJpegPacket& packet)
       : header_(packet.get_width(), packet.get_height(), packet.get_q_table(0), packet.get_q_table(1)) {
+      // add the jpeg header
+      serialize_header();
       // add the jpeg data
-      scans_.push_back(packet.get_jpeg_data());
+      add_scan(packet);
     }
 
     /// Get the width of the frame.
@@ -35,6 +37,12 @@ namespace espp {
       return header_.get_height();
     }
 
+    /// Check if the frame is complete.
+    /// @return True if the frame is complete, false otherwise.
+    bool is_complete() const {
+      return finalized_;
+    }
+
     /// Append a RtpJpegPacket to the frame.
     /// This will add the JPEG data to the frame.
     /// @param packet The packet containing the scan to append.
@@ -44,61 +52,64 @@ namespace espp {
 
     /// Append a JPEG scan to the frame.
     /// This will add the JPEG data to the frame.
+    /// @note If the packet contains the EOI marker, the frame will be
+    ///       finalized, and no further scans can be added.
     /// @param packet The packet containing the scan to append.
     void add_scan(const RtpJpegPacket& packet) {
       add_scan(packet.get_jpeg_data());
-    }
-
-    /// Append a JPEG scan to the frame.
-    /// This will add the JPEG data to the frame.
-    /// @param scan The jpeg scan to append.
-    void add_scan(std::string_view scan) {
-      scans_.push_back(scan);
-    }
-
-    /// Serialize the frame.
-    ///
-    /// This will serialize the header and all scans into a single buffer which
-    /// can be sent over the network. You can get the serialized data using
-    /// get_data().
-    ///
-    /// @note This method must be called before get_data() can be used.
-    /// @note This method should only be called once.
-    void serialize() {
-      auto header_data = header_.get_data();
-      auto scan_bytes = 0;
-      for (auto& scan : scans_) {
-        scan_bytes += scan.size();
+      if (packet.get_marker()) {
+        finalize();
       }
-      data_.resize(header_data.size() + scan_bytes + 2);;
-
-      int offset = 0;
-      // serialize the header
-      memcpy(data_.data(), header_data.data(), header_data.size());
-      offset += header_data.size();
-      // serialize the scans
-      for (auto& scan : scans_) {
-        memcpy(data_.data() + offset, scan.data(), scan.size());
-        offset += scan.size();
-      }
-      // add the EOI marker
-      data_[offset++] = 0xFF;
-      data_[offset++] = 0xD9;
     }
 
     /// Get the serialized data.
-    ///
-    /// This will return the serialized data. You must call serialize() before
-    /// calling this method.
-    ///
+    /// This will return the serialized data.
     /// @return The serialized data.
     std::string_view get_data() const {
       return std::string_view(data_.data(), data_.size());
     }
 
   protected:
+    /// Serialize the header.
+    void serialize_header() {
+      auto header_data = header_.get_data();
+      data_.resize(header_data.size());
+      memcpy(data_.data(), header_data.data(), header_data.size());
+    }
+
+    /// Append a JPEG scan to the frame.
+    /// This will add the JPEG data to the frame.
+    /// @param scan The jpeg scan to append.
+    void add_scan(std::string_view scan) {
+      if (finalized_) {
+        // TODO: handle this error
+        return;
+      }
+      data_.insert(std::end(data_), std::begin(scan), std::end(scan));
+    }
+
+    /// Add the EOI marker to the frame.
+    /// This will add the EOI marker to the frame. This must be called before
+    /// calling get_data().
+    /// @note This will prevent any further scans from being added to the frame.
+    void finalize() {
+      if (!finalized_) {
+        finalized_ = true;
+        // add_eoi();
+      } else {
+        // TODO: handle this error
+        // already finalized
+      }
+    }
+
+    /// Add the EOI marker to the frame.
+    void add_eoi() {
+      data_.push_back(0xFF);
+      data_.push_back(0xD9);
+    }
+
     JpegHeader header_;
-    std::vector<std::string_view> scans_;
+    bool finalized_ = false;
     std::vector<char> data_;
   };
 } // namespace espp

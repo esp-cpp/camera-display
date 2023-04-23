@@ -122,6 +122,7 @@ namespace espp {
         return;
       }
 
+      rtsp_socket_.reinit();
       auto did_connect = rtsp_socket_.connect({
           .ip_address = server_address_,
           .port = static_cast<size_t>(rtsp_port_),
@@ -338,7 +339,7 @@ namespace espp {
       };
       auto rtp_config = espp::UdpSocket::ReceiveConfig{
         .port = rtp_port,
-        .buffer_size = 2048,
+        .buffer_size = 6 * 1024,
         .on_receive_callback = std::bind(&RtspClient::handle_rtp_packet, this, std::placeholders::_1, std::placeholders::_2),
       };
       if (!rtp_socket_.start_receiving(rtp_task_config, rtp_config)) {
@@ -365,7 +366,7 @@ namespace espp {
       };
       auto rtcp_config = espp::UdpSocket::ReceiveConfig{
         .port = rtcp_port,
-        .buffer_size = 2048,
+        .buffer_size = 6 * 1024,
         .on_receive_callback = std::bind(&RtspClient::handle_rtcp_packet, this, std::placeholders::_1, std::placeholders::_2),
       };
       if (!rtcp_socket_.start_receiving(rtcp_task_config, rtcp_config)) {
@@ -392,8 +393,17 @@ namespace espp {
       auto frag_offset = rtp_jpeg_packet.get_offset();
       if (frag_offset == 0) {
         // first fragment
+        logger_.debug("Received first fragment, size: {}, sequence number: {}",
+                      rtp_jpeg_packet.get_data().size(), rtp_jpeg_packet.get_sequence_number());
+        if (jpeg_frame) {
+          // we already have a frame, this is an error
+          logger_.warn("Received first fragment but already have a frame");
+          jpeg_frame.reset();
+        }
         jpeg_frame = std::make_unique<JpegFrame>(rtp_jpeg_packet);
       } else if (jpeg_frame) {
+        logger_.debug("Received middle fragment, size: {}, sequence number: {}",
+                      rtp_jpeg_packet.get_data().size(), rtp_jpeg_packet.get_sequence_number());
         // middle fragment
         jpeg_frame->append(rtp_jpeg_packet);
       } else {
@@ -405,16 +415,15 @@ namespace espp {
 
       // check if this is the last packet of the frame (the last packet will have
       // the marker bit set)
-      if (jpeg_frame && rtp_jpeg_packet.get_marker()) {
-        // serialize the jpeg frame
-        jpeg_frame->serialize();
+      if (jpeg_frame && jpeg_frame->is_complete()) {
         // get the jpeg data
         auto jpeg_data = jpeg_frame->get_data();
-        logger_.debug("Received jpeg frame of size: {}", jpeg_data.size());
+        logger_.debug("Received jpeg frame of size: {} B", jpeg_data.size());
         // call the on_jpeg_frame callback
         if (on_jpeg_frame_) {
           on_jpeg_frame_(std::move(jpeg_frame));
         }
+        logger_.debug("Sent jpeg frame to callback, now jpeg_frame is nullptr? {}", jpeg_frame == nullptr);
       }
       // return an empty vector to indicate that we don't want to send a response
       return {};

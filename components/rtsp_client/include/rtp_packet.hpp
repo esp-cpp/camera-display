@@ -31,19 +31,19 @@ namespace espp {
 
     /// Get a string_view of the whole packet.
     /// @return A string_view of the whole packet.
-    std::string_view get_packet() {
+    std::string_view get_data() const {
       return std::string_view(packet_.data(), packet_.size());
     }
 
     /// Get a string_view of the RTP header.
     /// @return A string_view of the RTP header.
-    std::string_view get_packet_header() {
+    std::string_view get_packet_header() const {
       return std::string_view(packet_.data(), RTP_HEADER_SIZE);
     }
 
     /// Get a string_view of the payload.
     /// @return A string_view of the payload.
-    std::string_view get_payload() {
+    std::string_view get_payload() const {
       return std::string_view(packet_.data() + RTP_HEADER_SIZE, payload_size_);
     }
 
