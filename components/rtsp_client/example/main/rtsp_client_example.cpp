@@ -51,24 +51,31 @@ extern "C" void app_main(void) {
     std::this_thread::sleep_for(1s);
   }
 
+  std::unique_ptr<espp::JpegFrame> most_recent_jpeg_frame;
   std::error_code ec;
   espp::RtspClient rtsp_client({
       .server_address = "192.168.86.181",
         .rtsp_port = 8554,
         .path = "/mjpeg/1",
-        .on_jpeg_frame = [](std::unique_ptr<espp::JpegFrame> jpeg_frame) {
+        .on_jpeg_frame = [&most_recent_jpeg_frame](std::unique_ptr<espp::JpegFrame> jpeg_frame) {
           auto jpeg_data = jpeg_frame->get_data();
           auto jpeg_size = jpeg_data.size();
           fmt::print("Got JPEG frame: {} bytes\n", jpeg_size);
+          most_recent_jpeg_frame = std::move(jpeg_frame);
         },
         .log_level = espp::Logger::Verbosity::INFO,
         });
 
-  rtsp_client.connect(ec);
-  if (ec) {
-    logger.error("Failed to connect to RTSP server: {}", ec.message());
-    return;
-  }
+  do {
+    // clear the error code
+    ec.clear();
+    rtsp_client.connect(ec);
+    if (ec) {
+      logger.error("Error connecting to server: {}", ec.message());
+      logger.info("Retrying in 1s...");
+      std::this_thread::sleep_for(1s);
+    }
+  } while (ec);
 
   rtsp_client.describe(ec);
   if (ec) {
@@ -98,6 +105,11 @@ extern "C" void app_main(void) {
   // NOTE: the current server doesn't properly respond to the teardown request, so we'll just
   //       ignore the error here
   rtsp_client.disconnect(ec);
+
+  auto jpeg_data = most_recent_jpeg_frame->get_data();
+  logger.info("Most recent JPEG frame: {} bytes", jpeg_data.size());
+  std::vector<uint8_t> jpeg_vector(jpeg_data.begin(), jpeg_data.end());
+  logger.info("Most recent JPEG:\n{::#04x}", jpeg_vector);
 
   logger.info("RtspClient example finished");
 
