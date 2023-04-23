@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <chrono>
+#include <deque>
 
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
@@ -17,6 +18,7 @@
 #include "jpegdec.h"
 
 #include "format.hpp"
+#include "rtsp_client.hpp"
 #include "task.hpp"
 #include "task_monitor.hpp"
 #include "tcp_socket.hpp"
@@ -47,102 +49,12 @@ int drawMCUs(JPEGDRAW *pDraw) {
   return 1;
 }
 
-struct Image {
-  uint8_t *data{nullptr};
-  uint32_t num_bytes{0};
-  size_t offset{0};
-  int bytes_remaining{0};
-};
-
-size_t get_image_length(const uint8_t* header) {
-  return
-    header[4] << 24 |
-    header[5] << 16 |
-    header[6] << 8  |
-    header[7];
-}
-
-void init_image(const uint8_t* data, size_t data_len, Image* image) {
-  // 4 start bytes, 4 bytes of image length in header before start of image data
-  static size_t data_offset = 8;
-  size_t jpeg_len = get_image_length(data);
-  size_t img_bytes_received = std::min(data_len - data_offset, jpeg_len);
-  image->num_bytes = jpeg_len;
-  image->data = (uint8_t*)heap_caps_malloc(image->num_bytes, MALLOC_CAP_8BIT | MALLOC_CAP_SPIRAM);
-  // add the bytes to our new array
-  memcpy(image->data, &data[data_offset], img_bytes_received);
-  image->offset = img_bytes_received;
-  image->bytes_remaining = jpeg_len - img_bytes_received;
-}
-
-void update_image(const uint8_t* data, size_t data_len, Image* image) {
-  memcpy(&image->data[image->offset], data, data_len);
-  image->bytes_remaining -= data_len;
-  image->offset += data_len;
-  // fmt::print("Updated image offset = {}, remaining = {}/{}\n",
-  //            image->offset, image->bytes_remaining, image->num_bytes);
-}
-
-int find_header(std::basic_string_view<uint8_t> data) {
-  static std::vector<uint8_t> header{0xAA, 0xBB, 0xCC, 0xDD};
-  auto res = std::search(std::begin(data), std::end(data), std::begin(header), std::end(header));
-  bool has_header = res != std::end(data);
-  if (!has_header) {
-    return -1;
-  }
-  size_t header_offset = res - std::begin(data);
-  return header_offset;
-}
-
-int handle_image_data(std::basic_string_view<uint8_t> data, QueueHandle_t image_queue) {
-  static bool has_seen_header = false;
-  static Image image0, image1;
-  static size_t image_index = 0;
-  Image* image = image_index ? &image1 : &image0;
-  // will need to put multiple packets together into a single image based on
-  // header + length. only copy / allocate if there is space in the queue,
-  // otherwise just discard this image.
-  if (!has_seen_header) {
-    auto header_offset = find_header(data);
-    if (header_offset < 0) return -1;
-    size_t length = data.size() - header_offset;
-    init_image(&data[header_offset], length, image);
-    // fmt::print("Got header at offset {}/{}, remaining = {}/{}\n",
-    //            header_offset, data.size(), image->bytes_remaining, image->num_bytes);
-    // update state
-    has_seen_header = true;
-  } else {
-    // we've seen the header, so the beginning of this packet must be the
-    // continuation of the image.
-    size_t num_bytes = std::min(image->bytes_remaining, (int)data.size());
-    // fmt::print("continuation: offset = {}, data length = {}/{}, remaining = {}/{}\n",
-    //            image->offset, num_bytes, data.size(), image->bytes_remaining, image->num_bytes);
-    update_image(data.data(), num_bytes, image);
-  }
-
-  // return bytes remaining
-  if (image->bytes_remaining > 0) {
-    return image->bytes_remaining;
-  }
-
-  // bytes_remaining is <= 0, so send the image
-  auto num_spots = uxQueueSpacesAvailable(image_queue);
-  if (num_spots > 0) {
-    xQueueSend(image_queue, image, portMAX_DELAY);
-    image_index = image_index ? 0 : 1;
-    image = image_index ? &image1 : &image0;
-  } else {
-    free(image->data);
-    image->data = nullptr;
-  }
-  has_seen_header = false;
-  return -1;
-}
-
 extern "C" void app_main(void) {
-  esp_err_t err;
   espp::Logger logger({.tag = "Camera Display", .level = espp::Logger::Verbosity::INFO});
   logger.info("Bootup");
+
+  // initialize the lcd for the image display
+  lcd_init();
 
   // initialize NVS, needed for WiFi
   esp_err_t ret = nvs_flash_init();
@@ -172,66 +84,50 @@ extern "C" void app_main(void) {
     std::this_thread::sleep_for(1s);
   }
 
-  // multicast our receiver info over UDP
-  // create threads
-  auto client_task_fn = [](auto&, auto&) {
-    static espp::UdpSocket client_socket({});
-    static std::string multicast_group = "239.1.1.1";
-    static size_t multicast_port = 5000;
-    static std::string payload = "hello world";
-    static auto send_config = espp::UdpSocket::SendConfig{
-      .ip_address = multicast_group,
-      .port = multicast_port,
-      .is_multicast_endpoint = true,
-    };
-    // NOTE: now this call blocks until the response is received
-    client_socket.send(payload, send_config);
-    std::this_thread::sleep_for(1s);
-  };
-  auto client_task = espp::Task::make_unique({
-      .name = "Client Task",
-      .callback = client_task_fn,
-      .stack_size_bytes = 3*1024
-    });
-  client_task->start();
-
-  // initialize the lcd for the image display
-  lcd_init();
+  std::mutex jpeg_mutex;
+  std::condition_variable jpeg_cv;
+  static constexpr size_t MAX_JPEG_FRAMES = 2;
+  std::deque<std::unique_ptr<espp::JpegFrame>> jpeg_frames;
 
   // create the parsing and display task
   logger.info("Creating display task");
   std::atomic<int> num_frames_displayed{0};
-  QueueHandle_t receive_queue = xQueueCreate(2, sizeof(Image));
 
   std::atomic<float> elapsed{0};
-  auto display_task_fn = [&receive_queue, &num_frames_displayed, &elapsed](auto& m, auto& cv) {
+  auto display_task_fn = [&jpeg_mutex, &jpeg_cv, &jpeg_frames, &num_frames_displayed, &elapsed](auto& m, auto& cv) -> bool {
     // the original (max) image size is 1600x1200, but the S3 BOX has a resolution of 320x240
     // wait on the queue until we have an image ready to display
-    static Image image;
     static JPEGDEC jpeg;
     static espp::Logger logger({.tag = "Decoder", .level = espp::Logger::Verbosity::INFO});
 
-    if (xQueueReceive(receive_queue, &image, portMAX_DELAY) == pdPASS) {
-      logger.debug("Got image, length = {}", image.num_bytes);
-      static auto start = std::chrono::high_resolution_clock::now();
-      if (jpeg.openRAM(image.data, image.num_bytes, drawMCUs)) {
-        logger.debug("Image size: {} x {}, orientation: {}, bpp: {}", jpeg.getWidth(),
-                    jpeg.getHeight(), jpeg.getOrientation(), jpeg.getBpp());
-        jpeg.setPixelType(RGB565_BIG_ENDIAN);
-        if (!jpeg.decode(0,0,0)) {
-          logger.error("Error decoding");
-        }
-      } else {
-        logger.error("error opening jpeg image");
-      }
-
-      auto end = std::chrono::high_resolution_clock::now();
-      elapsed = std::chrono::duration<float>(end-start).count();
-      num_frames_displayed += 1;
-
-      // now free the memory we allocated when receiving the jpeg buffer
-      free(image.data);
+    std::unique_ptr<espp::JpegFrame> image;
+    {
+      // wait for a frame to be available
+      std::unique_lock<std::mutex> lock(jpeg_mutex);
+      jpeg_cv.wait(lock, [&jpeg_frames] { return !jpeg_frames.empty(); });
+      image = std::move(jpeg_frames.front());
+      jpeg_frames.pop_front();
     }
+    static auto start = std::chrono::high_resolution_clock::now();
+    auto image_data = image->get_data();
+    logger.info("Decoding image of size {} B, shape = {} x {}",
+                image_data.size(), image->get_width(), image->get_height());
+    if (jpeg.openRAM((uint8_t*)(image_data.data()), image_data.size(), drawMCUs)) {
+      logger.debug("Image size: {} x {}, orientation: {}, bpp: {}",
+                   jpeg.getWidth(),jpeg.getHeight(),
+                   jpeg.getOrientation(), jpeg.getBpp());
+      jpeg.setPixelType(RGB565_BIG_ENDIAN);
+      if (!jpeg.decode(0,0,0)) {
+        logger.error("Error decoding");
+      }
+    } else {
+      logger.error("error opening jpeg image");
+    }
+    auto end = std::chrono::high_resolution_clock::now();
+    elapsed = std::chrono::duration<float>(end-start).count();
+    num_frames_displayed += 1;
+    // signal that we do not want to stop the task
+    return false;
   };
   // Start the display task
   logger.info("Starting display task");
@@ -245,62 +141,63 @@ extern "C" void app_main(void) {
   // make the tcp_server
   logger.info("Starting server task");
   std::atomic<int> num_frames_received{0};
-  espp::TcpSocket server_socket({.log_level=espp::Logger::Verbosity::WARN});
-  static constexpr size_t port = 8888;
-  // bind
-  if (!server_socket.bind(port)){
-    return;
-  }
-  // listen
-  static constexpr size_t max_pending_connections = 1;
-  if (!server_socket.listen(max_pending_connections)) {
-    return;
-  }
-  auto server_task = espp::Task::make_unique({
-    .name = "TcpServer Task",
-    .callback = [&server_socket, &receive_queue, &num_frames_received](auto& m, auto& cv) {
-      static espp::Logger logger({.tag = "Receiver", .level = espp::Logger::Verbosity::INFO});
-      // ensure our socket is already closed
-      server_socket.close_accepted_socket();
-      // accept
-      if (!server_socket.accept()) {
-        return;
-      }
-      // receive
-      auto client_socket = server_socket.get_accepted_socket();
-      static constexpr size_t max_buffer_size = 1024;
-      static uint8_t *data = (uint8_t*)heap_caps_malloc(max_buffer_size, MALLOC_CAP_8BIT | MALLOC_CAP_SPIRAM);
-      size_t receive_buffer_size = max_buffer_size;
-      while (true) {
-        memset(data, 0, max_buffer_size);
-        logger.debug("Trying to receive {} B", receive_buffer_size);
-        auto num_bytes = server_socket.receive(client_socket, receive_buffer_size, data);
-        if (num_bytes < 0) {
-          // couldn't receive, let's see if we can break to try to accept again
-          break;
+  espp::RtspClient rtsp_client({
+      .server_address = "192.168.86.181",
+      .rtsp_port = 8554,
+      .path = "/mjpeg/1",
+      .on_jpeg_frame = [&jpeg_mutex, &jpeg_cv, &jpeg_frames, &num_frames_received](std::unique_ptr<espp::JpegFrame> jpeg_frame) {
+        {
+          std::lock_guard<std::mutex> lock(jpeg_mutex);
+          if (jpeg_frames.size() >= MAX_JPEG_FRAMES) {
+            jpeg_frames.pop_front();
+          }
+          jpeg_frames.push_back(std::move(jpeg_frame));
         }
-        int bytes_remaining = handle_image_data(std::basic_string_view<uint8_t>(data, num_bytes), receive_queue);
-        if (bytes_remaining > 0) {
-          receive_buffer_size = std::min(bytes_remaining, (int)max_buffer_size);
-        } else {
-          num_frames_received += 1;
-          receive_buffer_size = max_buffer_size;
-        }
-      }
-    },
-    .stack_size_bytes = 10 * 1024,
-  });
-  server_task->start();
+        jpeg_cv.notify_all();
+        num_frames_received += 1;
+      },
+        .log_level = espp::Logger::Verbosity::WARN,
+    });
+
+  std::error_code ec;
+
+  do {
+    // clear the error code
+    ec.clear();
+    rtsp_client.connect(ec);
+    if (ec) {
+      logger.error("Error connecting to server: {}", ec.message());
+      logger.info("Retrying in 1s...");
+      std::this_thread::sleep_for(1s);
+    }
+  } while (ec);
+
+  rtsp_client.describe(ec);
+  if (ec) {
+    logger.error("Error describing server: {}", ec.message());
+  }
+
+  rtsp_client.setup(ec);
+  if (ec) {
+    logger.error("Error setting up server: {}", ec.message());
+  }
+
+  rtsp_client.play(ec);
+  if (ec) {
+    logger.error("Error playing server: {}", ec.message());
+  }
 
   auto start = std::chrono::high_resolution_clock::now();
   while (true) {
     auto end = std::chrono::high_resolution_clock::now();
     float current_time = std::chrono::duration<float>(end-start).count();
-    fmt::print("[TM] {}\n", espp::TaskMonitor::get_latest_info());
-    fmt::print("[{:.3f}] Received {} frames\n", current_time, num_frames_received);
+    // fmt::print("[TM] {}\n", espp::TaskMonitor::get_latest_info());
     float disp_elapsed = elapsed;
     if (disp_elapsed > 1) {
-      fmt::print("[{:.3f}] Framerate: {} FPS\n", current_time, num_frames_displayed / disp_elapsed);
+      fmt::print("[{:.3f}] Received {} frames, Framerate: {} FPS\n",
+                 current_time, num_frames_received, num_frames_displayed / disp_elapsed);
+    } else {
+      fmt::print("[{:.3f}] Received {} frames\n", current_time, num_frames_received);
     }
     std::this_thread::sleep_for(1s);
   }

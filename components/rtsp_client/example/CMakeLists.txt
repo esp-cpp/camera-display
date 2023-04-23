@@ -6,18 +6,17 @@ include($ENV{IDF_PATH}/tools/cmake/project.cmake)
 
 # add the component directories that we want to use
 set(EXTRA_COMPONENT_DIRS
-  "components/espp/components"
+  "../../../components/"
+  "../../../components/espp/components"
 )
-
-add_compile_definitions(BOARD_HAS_PSRAM)
 
 set(
   COMPONENTS
-  "main esptool_py esp_psram jpegdec task format monitor display_drivers wifi socket rtsp_client"
+  "main esptool_py logger task socket wifi rtsp_client"
   CACHE STRING
   "List of components to include"
-)
+  )
 
-project(camera_display)
+project(rtsp_client_example)
 
 set(CMAKE_CXX_STANDARD 20)
