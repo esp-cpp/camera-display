@@ -194,7 +194,7 @@ void lcd_init() {
       .backlight_on_value = true,
       .invert_colors = true,
       .mirror_x = true,
-      .mirror_y = true,
+      .mirror_y = false,
     });
   // initialize the display / lvgl
   using namespace std::chrono_literals;
