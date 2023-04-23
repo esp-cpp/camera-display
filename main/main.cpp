@@ -110,11 +110,12 @@ extern "C" void app_main(void) {
     }
     static auto start = std::chrono::high_resolution_clock::now();
     auto image_data = image->get_data();
-    logger.info("Decoding image of size {}", image_data.size());
-    logger.info("Decoding image, shape = {} x {}", image->get_width(), image->get_height());
+    logger.info("Decoding image of size {} B, shape = {} x {}",
+                image_data.size(), image->get_width(), image->get_height());
     if (jpeg.openRAM((uint8_t*)(image_data.data()), image_data.size(), drawMCUs)) {
-      logger.debug("Image size: {} x {}, orientation: {}, bpp: {}", jpeg.getWidth(),
-                  jpeg.getHeight(), jpeg.getOrientation(), jpeg.getBpp());
+      logger.debug("Image size: {} x {}, orientation: {}, bpp: {}",
+                   jpeg.getWidth(),jpeg.getHeight(),
+                   jpeg.getOrientation(), jpeg.getBpp());
       jpeg.setPixelType(RGB565_BIG_ENDIAN);
       if (!jpeg.decode(0,0,0)) {
         logger.error("Error decoding");
@@ -149,14 +150,22 @@ extern "C" void app_main(void) {
         }
         jpeg_cv.notify_all();
         num_frames_received += 1;
-      }
+      },
+        .log_level = espp::Logger::Verbosity::WARN,
     });
 
   std::error_code ec;
-  rtsp_client.connect(ec);
-  if (ec) {
-    logger.error("Error connecting to server: {}", ec.message());
-  }
+
+  do {
+    // clear the error code
+    ec.clear();
+    rtsp_client.connect(ec);
+    if (ec) {
+      logger.error("Error connecting to server: {}", ec.message());
+      logger.info("Retrying in 1s...");
+      std::this_thread::sleep_for(1s);
+    }
+  } while (ec);
 
   rtsp_client.describe(ec);
   if (ec) {
@@ -177,11 +186,13 @@ extern "C" void app_main(void) {
   while (true) {
     auto end = std::chrono::high_resolution_clock::now();
     float current_time = std::chrono::duration<float>(end-start).count();
-    fmt::print("[TM] {}\n", espp::TaskMonitor::get_latest_info());
-    fmt::print("[{:.3f}] Received {} frames\n", current_time, num_frames_received);
+    // fmt::print("[TM] {}\n", espp::TaskMonitor::get_latest_info());
     float disp_elapsed = elapsed;
     if (disp_elapsed > 1) {
-      fmt::print("[{:.3f}] Framerate: {} FPS\n", current_time, num_frames_displayed / disp_elapsed);
+      fmt::print("[{:.3f}] Received {} frames, Framerate: {} FPS\n",
+                 current_time, num_frames_received, num_frames_displayed / disp_elapsed);
+    } else {
+      fmt::print("[{:.3f}] Received {} frames\n", current_time, num_frames_received);
     }
     std::this_thread::sleep_for(1s);
   }
