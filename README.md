@@ -1,7 +1,7 @@
 # camera-display
 
 Example for [ESP32-S3-BOX](https://www.adafruit.com/product/5290)
-([docs](https://github.com/espressif/esp-box)) which receives JPEG camera images
+([docs](https://github.com/espressif/esp-box)) which receives an MJPEG camera stream
 from the [camera-streamer app](https://github.com/esp-cpp/camera-streamer) over
 WiFi and displays them on the screen.
 
@@ -16,9 +16,8 @@ SPI) running on a ESP32-S3.
 
 This sample has two main tasks: 
 
-1. Receiver task, which runs a TCP server that receives jpeg image packets
-   (whicha have an 8-byte header which includes image length) and puts them into
-   a queue.
+1. RTSP client that receives mjpeg frames split into RTP packets, turns them 
+   back into JPEG images, and pushes them into a queue.
 2. Display task, which pulls image data from the queue, decodes the jpeg, and
    displays it on the screen.
    
