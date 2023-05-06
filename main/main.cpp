@@ -98,7 +98,7 @@ extern "C" void app_main(void) {
     // the original (max) image size is 1600x1200, but the S3 BOX has a resolution of 320x240
     // wait on the queue until we have an image ready to display
     static JPEGDEC jpeg;
-    static espp::Logger logger({.tag = "Decoder", .level = espp::Logger::Verbosity::INFO});
+    static espp::Logger logger({.tag = "Decoder", .level = espp::Logger::Verbosity::WARN});
 
     std::unique_ptr<espp::JpegFrame> image;
     {
@@ -138,11 +138,11 @@ extern "C" void app_main(void) {
     });
   display_task->start();
 
-  // make the tcp_server
+  // make the rtsp client
   logger.info("Starting server task");
   std::atomic<int> num_frames_received{0};
   espp::RtspClient rtsp_client({
-      .server_address = "192.168.86.181",
+      .server_address = "192.168.86.216",
       .rtsp_port = 8554,
       .path = "/mjpeg/1",
       .on_jpeg_frame = [&jpeg_mutex, &jpeg_cv, &jpeg_frames, &num_frames_received](std::unique_ptr<espp::JpegFrame> jpeg_frame) {
@@ -156,7 +156,7 @@ extern "C" void app_main(void) {
         jpeg_cv.notify_all();
         num_frames_received += 1;
       },
-        .log_level = espp::Logger::Verbosity::WARN,
+        .log_level = espp::Logger::Verbosity::ERROR,
     });
 
   std::error_code ec;
