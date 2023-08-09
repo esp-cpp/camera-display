@@ -5,6 +5,9 @@ Example for [ESP32-S3-BOX](https://www.adafruit.com/product/5290)
 from the [camera-streamer app](https://github.com/esp-cpp/camera-streamer) over
 WiFi and displays them on the screen.
 
+To facilitate discovery, this sample uses mDNS to find the camera-streamer app
+(or any RTSP server that advertises itself as `_rtsp._tcp.local`).
+
 https://user-images.githubusercontent.com/213467/236601479-fcd982f5-80b1-4ce5-aef6-ab2b90f3d0b8.mp4
 
 ## Hardware
@@ -26,3 +29,4 @@ It is built with these libraries:
 * [ESPP](https://github.com/esp-cpp/espp)
 * [JPEGDEC](https://github.com/bitbank2/JPEGDEC)
 * [ESP-IDF](https://github.com/espressif/esp-idf)
+* [mDNS](https://docs.espressif.com/projects/esp-protocols/mdns/docs/latest/en/index.html)
