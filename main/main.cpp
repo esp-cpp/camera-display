@@ -7,14 +7,14 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 
-#include "esp_heap_caps.h"
-#include "hal/spi_types.h"
 #include "driver/gpio.h"
 #include "driver/i2c.h"
 #include "driver/spi_master.h"
+#include "esp_heap_caps.h"
+#include "hal/spi_types.h"
+#include "mdns.h"
 #include "nvs_flash.h"
 
-// #include "jpeg_decoder.h"
 #include "jpegdec.h"
 
 #include "format.hpp"
@@ -29,6 +29,9 @@
 #include "lcd.hpp"
 
 using namespace std::chrono_literals;
+
+void mdns_print_results(mdns_result_t * results);
+bool find_mdns_service(const char * service_name, const char * proto, std::string& host, int& port);
 
 // function for drawing the minimum compressible units
 int drawMCUs(JPEGDRAW *pDraw) {
@@ -83,6 +86,37 @@ extern "C" void app_main(void) {
     logger.info("waiting for wifi connection...");
     std::this_thread::sleep_for(1s);
   }
+
+  // initialize mDNS
+  logger.info("Initializing mDNS");
+  auto err = mdns_init();
+  if (err != ESP_OK) {
+    logger.error("Could not initialize mDNS: {}", err);
+    return;
+  }
+
+  uint8_t mac[6];
+  esp_read_mac(mac, ESP_MAC_WIFI_STA);
+  std::string hostname = fmt::format("camera-display-{:x}{:x}{:x}", mac[3], mac[4], mac[5]);
+  err = mdns_hostname_set(hostname.c_str());
+  if (err != ESP_OK) {
+    logger.error("Could not set mDNS hostname: {}", err);
+    return;
+  }
+  logger.info("mDNS hostname set to '{}'", hostname);
+  err = mdns_instance_name_set("Camera Display");
+  if (err != ESP_OK) {
+    logger.error("Could not set mDNS instance name: {}", err);
+    return;
+  }
+  std::string mdns_service_address;
+  int mdns_service_port;
+  bool found_mdns_server{false};
+  while (!found_mdns_server) {
+    logger.info("Searching for RTSP server...");
+    found_mdns_server = find_mdns_service("_rtsp", "_tcp", mdns_service_address, mdns_service_port);
+  }
+  logger.info("Found RTSP server: {}:{}", mdns_service_address, mdns_service_port);
 
   std::mutex jpeg_mutex;
   std::condition_variable jpeg_cv;
@@ -142,8 +176,8 @@ extern "C" void app_main(void) {
   logger.info("Starting server task");
   std::atomic<int> num_frames_received{0};
   espp::RtspClient rtsp_client({
-      .server_address = "192.168.86.216",
-      .rtsp_port = 8554,
+      .server_address = mdns_service_address,
+      .rtsp_port = mdns_service_port,
       .path = "/mjpeg/1",
       .on_jpeg_frame = [&jpeg_mutex, &jpeg_cv, &jpeg_frames, &num_frames_received](std::unique_ptr<espp::JpegFrame> jpeg_frame) {
         {
@@ -201,4 +235,74 @@ extern "C" void app_main(void) {
     }
     std::this_thread::sleep_for(1s);
   }
+}
+
+static const char * ip_protocol_str[] = {"V4", "V6", "MAX"};
+
+void mdns_print_results(mdns_result_t * results) {
+  mdns_result_t *r = results;
+  mdns_ip_addr_t *a = NULL;
+  int i = 1, t;
+  while (r) {
+    if (r->esp_netif) {
+      printf("%d: Interface: %s, Type: %s, TTL: %lu\n", i++, esp_netif_get_ifkey(r->esp_netif),
+             ip_protocol_str[r->ip_protocol], r->ttl);
+    }
+    if (r->instance_name) {
+      printf("  PTR : %s.%s.%s\n", r->instance_name, r->service_type, r->proto);
+    }
+    if (r->hostname) {
+      printf("  SRV : %s.local:%u\n", r->hostname, r->port);
+    }
+    if (r->txt_count) {
+      printf("  TXT : [%zu] ", r->txt_count);
+      for (t = 0; t < r->txt_count; t++) {
+        printf("%s=%s(%d); ", r->txt[t].key, r->txt[t].value ? r->txt[t].value : "NULL", r->txt_value_len[t]);
+      }
+      printf("\n");
+    }
+    a = r->addr;
+    while (a) {
+      if (a->addr.type == ESP_IPADDR_TYPE_V6) {
+        printf("  AAAA: " IPV6STR "\n", IPV62STR(a->addr.u_addr.ip6));
+      } else {
+        printf("  A   : " IPSTR "\n", IP2STR(&(a->addr.u_addr.ip4)));
+      }
+      a = a->next;
+    }
+    r = r->next;
+  }
+}
+
+bool find_mdns_service(const char * service_name, const char * proto, std::string& host, int& port) {
+    fmt::print("Query PTR: {}.{}.local\n", service_name, proto);
+
+    mdns_result_t * results = NULL;
+    int timeout = 3000;
+    int max_results = 20;
+    esp_err_t err = mdns_query_ptr(service_name, proto, timeout, max_results,  &results);
+    if(err){
+        fmt::print("Query Failed\n");
+        return false;
+    }
+    if(!results){
+        fmt::print("No results found!\n");
+        return false;
+    }
+
+    mdns_print_results(results);
+    // now set the host ip address string and port number from the results
+    mdns_result_t * r = results;
+    if (r->addr) {
+      if (r->addr->addr.type == ESP_IPADDR_TYPE_V6) {
+        host = fmt::format(IPV6STR, IPV62STR(r->addr->addr.u_addr.ip6));
+      } else {
+        host = fmt::format("{}.{}.{}.{}", IP2STR(&(r->addr->addr.u_addr.ip4)));
+      }
+    }
+    if (r->port) {
+      port = r->port;
+    }
+    mdns_query_results_free(results);
+    return true;
 }
