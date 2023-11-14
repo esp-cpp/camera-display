@@ -14,7 +14,7 @@ add_compile_definitions(BOARD_HAS_PSRAM)
 
 set(
   COMPONENTS
-  "main esptool_py esp_psram jpegdec task format monitor display_drivers wifi socket rtsp mdns"
+  "main esptool_py esp_psram jpegdec task format monitor i2c display_drivers input_drivers gt911 tt21100 wifi socket rtsp mdns"
   CACHE STRING
   "List of components to include"
 )

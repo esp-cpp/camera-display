@@ -4,46 +4,49 @@
 #include "driver/spi_master.h"
 
 #include "display.hpp"
-#include "st7789.hpp"
+
+#if CONFIG_HARDWARE_BOX
+#include "box.hpp"
+#elif CONFIG_HARDWARE_BOX_3
+#include "box_3.hpp"
+#elif CONFIG_HARDWARE_TDECK
+#include "tdeck.hpp"
+#else
+#error "Invalid hardware configuration selected!"
+#endif
+
+using namespace hal;
 
 static spi_device_handle_t spi;
 
 static constexpr size_t NUM_ROWS_IN_FRAME_BUFFER = 50;
-static constexpr size_t display_width = 320;
-static constexpr size_t display_height = 240;
-static constexpr size_t pixel_buffer_size = display_width*NUM_ROWS_IN_FRAME_BUFFER;
+static constexpr size_t pixel_buffer_size = display_width * NUM_ROWS_IN_FRAME_BUFFER;
 std::shared_ptr<espp::Display> display;
 
-static const int spi_queue_size = 7;
+static const int spi_queue_size = 6;
 static spi_transaction_t ts_[spi_queue_size];
-static size_t ts_index = 0;
 static size_t num_queued_trans = 0;
-
-static constexpr size_t frame_buffer_size = (((320) * 2) * 240);
-static uint8_t *frame_buffer0;
-static uint8_t *frame_buffer1;
 
 // the user flag for the callbacks does two things:
 // 1. Provides the GPIO level for the data/command pin, and
 // 2. Sets some bits for other signaling (such as LVGL FLUSH)
 static constexpr int FLUSH_BIT = (1 << (int)espp::display_drivers::Flags::FLUSH_BIT);
 static constexpr int DC_LEVEL_BIT = (1 << (int)espp::display_drivers::Flags::DC_LEVEL_BIT);
-static constexpr int DC_PIN_NUM = 4;
 
 // This function is called (in irq context!) just before a transmission starts.
 // It will set the D/C line to the value indicated in the user field
 // (DC_LEVEL_BIT).
-static void IRAM_ATTR lcd_spi_pre_transfer_callback(spi_transaction_t *t)
+static void lcd_spi_pre_transfer_callback(spi_transaction_t *t)
 {
     uint32_t user_flags = (uint32_t)(t->user);
     bool dc_level = user_flags & DC_LEVEL_BIT;
-    gpio_set_level((gpio_num_t)DC_PIN_NUM, dc_level);
+    gpio_set_level(lcd_dc, dc_level);
 }
 
 // This function is called (in irq context!) just after a transmission ends. It
 // will indicate to lvgl that the next flush is ready to be done if the
 // FLUSH_BIT is set.
-static void IRAM_ATTR lcd_spi_post_transfer_callback(spi_transaction_t *t)
+static void lcd_spi_post_transfer_callback(spi_transaction_t *t)
 {
     uint16_t user_flags = (uint32_t)(t->user);
     bool should_flush = user_flags & FLUSH_BIT;
@@ -53,7 +56,7 @@ static void IRAM_ATTR lcd_spi_post_transfer_callback(spi_transaction_t *t)
     }
 }
 
-extern "C" void IRAM_ATTR lcd_write(const uint8_t *data, size_t length, uint32_t user_data) {
+extern "C" void lcd_write(const uint8_t *data, size_t length, uint32_t user_data) {
     if (length == 0) {
         return;
     }
@@ -104,17 +107,17 @@ void IRAM_ATTR lcd_send_lines(int xs, int ys, int xe, int ye, const uint8_t *dat
         trans[i].flags=SPI_TRANS_USE_TXDATA;
     }
     size_t length = (xe-xs+1)*(ye-ys+1)*2;
-    trans[0].tx_data[0]=(uint8_t)espp::St7789::Command::caset;
+    trans[0].tx_data[0]=(uint8_t)DisplayDriver::Command::caset;
     trans[1].tx_data[0]=(xs)>> 8;
     trans[1].tx_data[1]=(xs)&0xff;
     trans[1].tx_data[2]=(xe)>>8;
     trans[1].tx_data[3]=(xe)&0xff;
-    trans[2].tx_data[0]=(uint8_t)espp::St7789::Command::raset;
+    trans[2].tx_data[0]=(uint8_t)DisplayDriver::Command::raset;
     trans[3].tx_data[0]=(ys)>>8;
     trans[3].tx_data[1]=(ys)&0xff;
     trans[3].tx_data[2]=(ye)>>8;
     trans[3].tx_data[3]=(ye)&0xff;
-    trans[4].tx_data[0]=(uint8_t)espp::St7789::Command::ramwr;
+    trans[4].tx_data[0]=(uint8_t)DisplayDriver::Command::ramwr;
     trans[5].tx_buffer=data;
     trans[5].length=length*8;
     // undo SPI_TRANS_USE_TXDATA flag
@@ -146,55 +149,50 @@ uint16_t* get_vram1() {
     return display->vram1();
 }
 
-uint8_t* get_frame_buffer0() {
-    return frame_buffer0;
-}
-
-uint8_t* get_frame_buffer1() {
-    return frame_buffer1;
-}
-
-static spi_bus_config_t buscfg = {
-    .mosi_io_num=GPIO_NUM_6,
-    .miso_io_num=-1,
-    .sclk_io_num=GPIO_NUM_7,
-    .quadwp_io_num=-1,
-    .quadhd_io_num=-1,
-    .max_transfer_sz=display_width * display_height * 2 + 8
-};
-static spi_device_interface_config_t devcfg = {
-    .mode=0,
-    .clock_speed_hz=60*1000*1000,
-    .input_delay_ns=0,
-    .spics_io_num=GPIO_NUM_5,
-    .queue_size=spi_queue_size,
-    .pre_cb=lcd_spi_pre_transfer_callback,
-    .post_cb=lcd_spi_post_transfer_callback,
-};
-
 void lcd_init() {
-  static bool initialized = false;
-  if (initialized) {
-    return;
-  }
-  esp_err_t ret;
+    static bool initialized = false;
+    if (initialized) {
+        return;
+    }
+    esp_err_t ret;
+
+    spi_bus_config_t buscfg;
+    memset(&buscfg, 0, sizeof(buscfg));
+    buscfg.mosi_io_num = lcd_mosi;
+    buscfg.miso_io_num = -1;
+    buscfg.sclk_io_num = lcd_sclk;
+    buscfg.quadwp_io_num = -1;
+    buscfg.quadhd_io_num = -1;
+    buscfg.max_transfer_sz = display_width * display_height * 2 + 8;
+
+    spi_device_interface_config_t devcfg;
+    memset(&devcfg, 0, sizeof(devcfg));
+    devcfg.mode = 0;
+    devcfg.clock_speed_hz = lcd_clock_speed;
+    devcfg.input_delay_ns = 0;
+    devcfg.spics_io_num = lcd_cs;
+    devcfg.queue_size = spi_queue_size;
+    devcfg.pre_cb = lcd_spi_pre_transfer_callback;
+    devcfg.post_cb = lcd_spi_post_transfer_callback;
+
   //Initialize the SPI bus
-  ret=spi_bus_initialize(SPI2_HOST, &buscfg, SPI_DMA_CH_AUTO);
+  ret = spi_bus_initialize(lcd_spi_num, &buscfg, SPI_DMA_CH_AUTO);
   ESP_ERROR_CHECK(ret);
   //Attach the LCD to the SPI bus
-  ret=spi_bus_add_device(SPI2_HOST, &devcfg, &spi);
+  ret = spi_bus_add_device(lcd_spi_num, &devcfg, &spi);
   ESP_ERROR_CHECK(ret);
   // initialize the controller
-  espp::St7789::initialize(espp::display_drivers::Config{
+  DisplayDriver::initialize(espp::display_drivers::Config{
       .lcd_write = lcd_write,
       .lcd_send_lines = lcd_send_lines,
-      .reset_pin = (gpio_num_t)48,
-      .data_command_pin = (gpio_num_t)DC_PIN_NUM,
-      .backlight_pin = (gpio_num_t)45,
-      .backlight_on_value = true,
-      .invert_colors = true,
-      .mirror_x = true,
-      .mirror_y = false,
+      .reset_pin = lcd_reset,
+      .data_command_pin = lcd_dc,
+      .backlight_pin = backlight,
+      .backlight_on_value = backlight_value,
+      .reset_value = reset_value,
+      .invert_colors = invert_colors,
+      .mirror_x = mirror_x,
+      .mirror_y = mirror_y,
     });
   // initialize the display / lvgl
   using namespace std::chrono_literals;
@@ -202,14 +200,14 @@ void lcd_init() {
       .width = display_width,
       .height = display_height,
       .pixel_buffer_size = pixel_buffer_size,
-      .flush_callback = espp::St7789::flush,
+      .flush_callback = DisplayDriver::flush,
       .update_period = 5ms,
       .double_buffered = true,
       .allocation_flags = MALLOC_CAP_8BIT | MALLOC_CAP_DMA,
-      .rotation = espp::Display::Rotation::LANDSCAPE,
+      .rotation = rotation,
       .software_rotation_enabled = true,
     });
-  // frame_buffer0 = (uint8_t*)heap_caps_malloc(frame_buffer_size, MALLOC_CAP_8BIT | MALLOC_CAP_SPIRAM);
-  // frame_buffer1 = (uint8_t*)heap_caps_malloc(frame_buffer_size, MALLOC_CAP_8BIT | MALLOC_CAP_SPIRAM);
+  // clear the display
+  DisplayDriver::clear(0, 0, display_width, display_height);
   initialized = true;
 }
