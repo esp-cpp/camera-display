@@ -13,6 +13,9 @@ To facilitate discovery, this sample uses mDNS to find the camera-streamer app
 
 https://user-images.githubusercontent.com/213467/236601479-fcd982f5-80b1-4ce5-aef6-ab2b90f3d0b8.mp4
 
+![image](https://github.com/esp-cpp/camera-display/assets/213467/3b08febf-433b-42e1-b139-132d64e35a07)
+![image](https://github.com/esp-cpp/camera-display/assets/213467/cc179d89-6083-4324-af5e-05003beeda72)
+
 ## Hardware
 
 This sample is designed to run on the ESP32-S3-BOX, ESP32-S3-BOX-3, and LilyGo
