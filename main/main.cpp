@@ -8,10 +8,6 @@
 #include "freertos/task.h"
 
 #include "driver/gpio.h"
-#include "driver/i2c.h"
-#include "driver/spi_master.h"
-#include "esp_heap_caps.h"
-#include "hal/spi_types.h"
 #include "mdns.h"
 #include "nvs_flash.h"
 
@@ -24,7 +20,6 @@
 #include "tcp_socket.hpp"
 #include "udp_socket.hpp"
 #include "wifi_sta.hpp"
-#include "st7789.hpp"
 
 #include "lcd.hpp"
 

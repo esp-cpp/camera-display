@@ -1,5 +1,18 @@
 menu "Camera Display Configuration"
 
+    choice
+        prompt "Hardware Configuration"
+        default HARDWARE_BOX
+        help
+            Select the dev-kit / hardware you're using.
+        config HARDWARE_BOX
+            bool "ESP BOX"
+        config HARDWARE_BOX_3
+            bool "ESP BOX 3"
+        config HARDWARE_TDECK
+            bool "LILYGO T DECK"
+    endchoice
+
     config ESP_WIFI_SSID
         string "WiFi SSID"
         default "myssid"
