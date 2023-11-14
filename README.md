@@ -1,9 +1,12 @@
 # camera-display
 
 Example for [ESP32-S3-BOX](https://www.adafruit.com/product/5290)
-([docs](https://github.com/espressif/esp-box)) which receives an MJPEG camera stream
-from the [camera-streamer app](https://github.com/esp-cpp/camera-streamer) over
-WiFi and displays them on the screen.
+([docs](https://github.com/espressif/esp-box)),
+[ESP32-S3-BOX-3](https://www.espressif.com/en/news/ESP32-S3-BOX-3)([mouser](https://www.mouser.com/ProductDetail/Espressif-Systems/ESP32-S3-BOX-3?qs=HoCaDK9Nz5chOY9AUo%2F%2FvA%3D%3D)),
+and [LilyGo T-Deck](https://www.lilygo.cc/products/t-deck) which receives an
+MJPEG camera stream from the [camera-streamer
+app](https://github.com/esp-cpp/camera-streamer) over WiFi and displays them on
+the screen.
 
 To facilitate discovery, this sample uses mDNS to find the camera-streamer app
 (or any RTSP server that advertises itself as `_rtsp._tcp.local`).
@@ -12,8 +15,8 @@ https://user-images.githubusercontent.com/213467/236601479-fcd982f5-80b1-4ce5-ae
 
 ## Hardware
 
-This sample is designed to run on the ESP32-S3-BOX which has a 320x240 LCD (over
-SPI) running on a ESP32-S3.
+This sample is designed to run on the ESP32-S3-BOX, ESP32-S3-BOX-3, and LilyGo
+T-Deck all of which have a 320x240 LCD (over SPI) running on a ESP32-S3.
 
 ## Software
 
