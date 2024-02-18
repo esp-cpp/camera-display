@@ -11,7 +11,7 @@
 #include "mdns.h"
 #include "nvs_flash.h"
 
-#include "jpegdec.h"
+#include "JPEGDEC.h"
 
 #include "format.hpp"
 #include "rtsp_client.hpp"
@@ -25,10 +25,11 @@
 
 using namespace std::chrono_literals;
 
-void mdns_print_results(mdns_result_t * results);
-bool find_mdns_service(const char * service_name, const char * proto, std::string& host, int& port);
+void mdns_print_results(mdns_result_t *results);
+bool find_mdns_service(const char *service_name, const char *proto, std::string &host, int &port);
 
 // function for drawing the minimum compressible units
+// cppcheck-suppress constParameterCallback
 int drawMCUs(JPEGDRAW *pDraw) {
   int iCount = pDraw->iWidth * pDraw->iHeight;
   auto xs = pDraw->x;
@@ -37,7 +38,7 @@ int drawMCUs(JPEGDRAW *pDraw) {
   auto ye = pDraw->y + pDraw->iHeight - 1;
 
   static size_t frame_buffer_index = 0;
-  uint8_t* out_img_buf = (uint8_t*)(frame_buffer_index ? get_vram1() : get_vram0());
+  uint8_t *out_img_buf = (uint8_t *)(frame_buffer_index ? get_vram1() : get_vram0());
   frame_buffer_index = frame_buffer_index ? 0 : 1;
   memcpy(out_img_buf, pDraw->pPixels, iCount * 2);
 
@@ -65,16 +66,14 @@ extern "C" void app_main(void) {
 
   // initialize WiFi
   logger.info("Initializing WiFi");
-  espp::WifiSta wifi_sta({
-      .ssid = CONFIG_ESP_WIFI_SSID,
-        .password = CONFIG_ESP_WIFI_PASSWORD,
-        .num_connect_retries = CONFIG_ESP_MAXIMUM_RETRY,
-        .on_connected = nullptr,
-        .on_disconnected = nullptr,
-        .on_got_ip = [&logger](ip_event_got_ip_t* eventdata) {
-          logger.info("got IP: {}.{}.{}.{}", IP2STR(&eventdata->ip_info.ip));
-        }
-        });
+  espp::WifiSta wifi_sta({.ssid = CONFIG_ESP_WIFI_SSID,
+                          .password = CONFIG_ESP_WIFI_PASSWORD,
+                          .num_connect_retries = CONFIG_ESP_MAXIMUM_RETRY,
+                          .on_connected = nullptr,
+                          .on_disconnected = nullptr,
+                          .on_got_ip = [&logger](ip_event_got_ip_t *eventdata) {
+                            logger.info("got IP: {}.{}.{}.{}", IP2STR(&eventdata->ip_info.ip));
+                          }});
 
   // wait for network
   while (!wifi_sta.is_connected()) {
@@ -123,7 +122,8 @@ extern "C" void app_main(void) {
   std::atomic<int> num_frames_displayed{0};
 
   std::atomic<float> elapsed{0};
-  auto display_task_fn = [&jpeg_mutex, &jpeg_cv, &jpeg_frames, &num_frames_displayed, &elapsed](auto& m, auto& cv) -> bool {
+  auto display_task_fn = [&jpeg_mutex, &jpeg_cv, &jpeg_frames, &num_frames_displayed,
+                          &elapsed](auto &m, auto &cv) -> bool {
     // the original (max) image size is 1600x1200, but the S3 BOX has a resolution of 320x240
     // wait on the queue until we have an image ready to display
     static JPEGDEC jpeg;
@@ -139,21 +139,20 @@ extern "C" void app_main(void) {
     }
     static auto start = std::chrono::high_resolution_clock::now();
     auto image_data = image->get_data();
-    logger.info("Decoding image of size {} B, shape = {} x {}",
-                image_data.size(), image->get_width(), image->get_height());
-    if (jpeg.openRAM((uint8_t*)(image_data.data()), image_data.size(), drawMCUs)) {
-      logger.debug("Image size: {} x {}, orientation: {}, bpp: {}",
-                   jpeg.getWidth(),jpeg.getHeight(),
-                   jpeg.getOrientation(), jpeg.getBpp());
+    logger.info("Decoding image of size {} B, shape = {} x {}", image_data.size(),
+                image->get_width(), image->get_height());
+    if (jpeg.openRAM((uint8_t *)(image_data.data()), image_data.size(), drawMCUs)) {
+      logger.debug("Image size: {} x {}, orientation: {}, bpp: {}", jpeg.getWidth(),
+                   jpeg.getHeight(), jpeg.getOrientation(), jpeg.getBpp());
       jpeg.setPixelType(RGB565_BIG_ENDIAN);
-      if (!jpeg.decode(0,0,0)) {
+      if (!jpeg.decode(0, 0, 0)) {
         logger.error("Error decoding");
       }
     } else {
       logger.error("error opening jpeg image");
     }
     auto end = std::chrono::high_resolution_clock::now();
-    elapsed = std::chrono::duration<float>(end-start).count();
+    elapsed = std::chrono::duration<float>(end - start).count();
     num_frames_displayed += 1;
     // signal that we do not want to stop the task
     return false;
@@ -164,7 +163,7 @@ extern "C" void app_main(void) {
       .name = "Display Task",
       .callback = display_task_fn,
       .stack_size_bytes = 10 * 1024,
-    });
+  });
   display_task->start();
 
   // make the rtsp client
@@ -174,19 +173,21 @@ extern "C" void app_main(void) {
       .server_address = mdns_service_address,
       .rtsp_port = mdns_service_port,
       .path = "/mjpeg/1",
-      .on_jpeg_frame = [&jpeg_mutex, &jpeg_cv, &jpeg_frames, &num_frames_received](std::unique_ptr<espp::JpegFrame> jpeg_frame) {
-        {
-          std::lock_guard<std::mutex> lock(jpeg_mutex);
-          if (jpeg_frames.size() >= MAX_JPEG_FRAMES) {
-            jpeg_frames.pop_front();
-          }
-          jpeg_frames.push_back(std::move(jpeg_frame));
-        }
-        jpeg_cv.notify_all();
-        num_frames_received += 1;
-      },
-        .log_level = espp::Logger::Verbosity::ERROR,
-    });
+      .on_jpeg_frame =
+          [&jpeg_mutex, &jpeg_cv, &jpeg_frames,
+           &num_frames_received](std::unique_ptr<espp::JpegFrame> jpeg_frame) {
+            {
+              std::lock_guard<std::mutex> lock(jpeg_mutex);
+              if (jpeg_frames.size() >= MAX_JPEG_FRAMES) {
+                jpeg_frames.pop_front();
+              }
+              jpeg_frames.push_back(std::move(jpeg_frame));
+            }
+            jpeg_cv.notify_all();
+            num_frames_received += 1;
+          },
+      .log_level = espp::Logger::Verbosity::ERROR,
+  });
 
   std::error_code ec;
 
@@ -219,12 +220,12 @@ extern "C" void app_main(void) {
   auto start = std::chrono::high_resolution_clock::now();
   while (true) {
     auto end = std::chrono::high_resolution_clock::now();
-    float current_time = std::chrono::duration<float>(end-start).count();
+    float current_time = std::chrono::duration<float>(end - start).count();
     // fmt::print("[TM] {}\n", espp::TaskMonitor::get_latest_info());
     float disp_elapsed = elapsed;
     if (disp_elapsed > 1) {
-      fmt::print("[{:.3f}] Received {} frames, Framerate: {} FPS\n",
-                 current_time, num_frames_received, num_frames_displayed / disp_elapsed);
+      fmt::print("[{:.3f}] Received {} frames, Framerate: {} FPS\n", current_time,
+                 num_frames_received, num_frames_displayed / disp_elapsed);
     } else {
       fmt::print("[{:.3f}] Received {} frames\n", current_time, num_frames_received);
     }
@@ -232,9 +233,9 @@ extern "C" void app_main(void) {
   }
 }
 
-static const char * ip_protocol_str[] = {"V4", "V6", "MAX"};
+static const char *ip_protocol_str[] = {"V4", "V6", "MAX"};
 
-void mdns_print_results(mdns_result_t * results) {
+void mdns_print_results(mdns_result_t *results) {
   mdns_result_t *r = results;
   mdns_ip_addr_t *a = NULL;
   int i = 1, t;
@@ -252,7 +253,8 @@ void mdns_print_results(mdns_result_t * results) {
     if (r->txt_count) {
       printf("  TXT : [%zu] ", r->txt_count);
       for (t = 0; t < r->txt_count; t++) {
-        printf("%s=%s(%d); ", r->txt[t].key, r->txt[t].value ? r->txt[t].value : "NULL", r->txt_value_len[t]);
+        printf("%s=%s(%d); ", r->txt[t].key, r->txt[t].value ? r->txt[t].value : "NULL",
+               r->txt_value_len[t]);
       }
       printf("\n");
     }
@@ -269,35 +271,35 @@ void mdns_print_results(mdns_result_t * results) {
   }
 }
 
-bool find_mdns_service(const char * service_name, const char * proto, std::string& host, int& port) {
-    fmt::print("Query PTR: {}.{}.local\n", service_name, proto);
+bool find_mdns_service(const char *service_name, const char *proto, std::string &host, int &port) {
+  fmt::print("Query PTR: {}.{}.local\n", service_name, proto);
 
-    mdns_result_t * results = NULL;
-    int timeout = 3000;
-    int max_results = 20;
-    esp_err_t err = mdns_query_ptr(service_name, proto, timeout, max_results,  &results);
-    if(err){
-        fmt::print("Query Failed\n");
-        return false;
-    }
-    if(!results){
-        fmt::print("No results found!\n");
-        return false;
-    }
+  mdns_result_t *results = NULL;
+  int timeout = 3000;
+  int max_results = 20;
+  esp_err_t err = mdns_query_ptr(service_name, proto, timeout, max_results, &results);
+  if (err) {
+    fmt::print("Query Failed\n");
+    return false;
+  }
+  if (!results) {
+    fmt::print("No results found!\n");
+    return false;
+  }
 
-    mdns_print_results(results);
-    // now set the host ip address string and port number from the results
-    mdns_result_t * r = results;
-    if (r->addr) {
-      if (r->addr->addr.type == ESP_IPADDR_TYPE_V6) {
-        host = fmt::format(IPV6STR, IPV62STR(r->addr->addr.u_addr.ip6));
-      } else {
-        host = fmt::format("{}.{}.{}.{}", IP2STR(&(r->addr->addr.u_addr.ip4)));
-      }
+  mdns_print_results(results);
+  // now set the host ip address string and port number from the results
+  mdns_result_t *r = results;
+  if (r->addr) {
+    if (r->addr->addr.type == ESP_IPADDR_TYPE_V6) {
+      host = fmt::format(IPV6STR, IPV62STR(r->addr->addr.u_addr.ip6));
+    } else {
+      host = fmt::format("{}.{}.{}.{}", IP2STR(&(r->addr->addr.u_addr.ip4)));
     }
-    if (r->port) {
-      port = r->port;
-    }
-    mdns_query_results_free(results);
-    return true;
+  }
+  if (r->port) {
+    port = r->port;
+  }
+  mdns_query_results_free(results);
+  return true;
 }
