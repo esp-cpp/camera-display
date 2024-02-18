@@ -1,14 +1,14 @@
 #pragma once
 
-#include "hal/spi_types.h"
 #include "driver/gpio.h"
 #include "driver/i2s_std.h"
 #include "driver/spi_master.h"
+#include "hal/spi_types.h"
 
+#include "gt911.hpp"
 #include "i2c.hpp"
 #include "st7789.hpp"
 #include "touchpad_input.hpp"
-#include "gt911.hpp"
 
 namespace hal {
 
@@ -51,13 +51,13 @@ static constexpr bool touch_invert_x = false;
 static constexpr bool touch_invert_y = false;
 static constexpr gpio_num_t touch_interrupt = GPIO_NUM_3;
 using TouchDriver = espp::Gt911;
-  #define TOUCH_DRIVER_USE_WRITE 1
-  #define TOUCH_DRIVER_USE_READ 0
-  #define TOUCH_DRIVER_USE_WRITE_READ 1
+#define TOUCH_DRIVER_USE_WRITE 1
+#define TOUCH_DRIVER_USE_READ 0
+#define TOUCH_DRIVER_USE_WRITE_READ 1
 
 // sound
 static constexpr gpio_num_t sound_power_pin = GPIO_NUM_46;
-static constexpr auto  i2s_port = I2S_NUM_0;
+static constexpr auto i2s_port = I2S_NUM_0;
 static constexpr gpio_num_t i2s_mck_io = GPIO_NUM_2;
 static constexpr gpio_num_t i2s_bck_io = GPIO_NUM_17;
 static constexpr gpio_num_t i2s_ws_io = GPIO_NUM_45; // was 47 on ESP32-S3-BOX
@@ -72,4 +72,4 @@ static constexpr gpio_num_t sdcard_miso = GPIO_NUM_13;
 static constexpr gpio_num_t sdcard_sclk = GPIO_NUM_12;
 static constexpr auto sdcard_spi_num = SPI3_HOST;
 
-} // namespace box_hal
+} // namespace hal
