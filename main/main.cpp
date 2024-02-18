@@ -29,6 +29,7 @@ void mdns_print_results(mdns_result_t *results);
 bool find_mdns_service(const char *service_name, const char *proto, std::string &host, int &port);
 
 // function for drawing the minimum compressible units
+// cppcheck-suppress constParameterCallback
 int drawMCUs(JPEGDRAW *pDraw) {
   int iCount = pDraw->iWidth * pDraw->iHeight;
   auto xs = pDraw->x;
