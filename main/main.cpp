@@ -11,7 +11,7 @@
 #include "mdns.h"
 #include "nvs_flash.h"
 
-#include "jpegdec.h"
+#include "JPEGDEC.h"
 
 #include "format.hpp"
 #include "rtsp_client.hpp"
