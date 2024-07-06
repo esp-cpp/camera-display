@@ -7,13 +7,12 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 
-#include "driver/gpio.h"
 #include "mdns.h"
-#include "nvs_flash.h"
 
 #include "JPEGDEC.h"
 
 #include "format.hpp"
+#include "nvs.hpp"
 #include "rtsp_client.hpp"
 #include "task.hpp"
 #include "task_monitor.hpp"
@@ -21,7 +20,15 @@
 #include "udp_socket.hpp"
 #include "wifi_sta.hpp"
 
-#include "lcd.hpp"
+#if CONFIG_HARDWARE_BOX
+#include "esp-box.hpp"
+using hal = espp::EspBox;
+#elif CONFIG_HARDWARE_TDECK
+#include "t-deck.hpp"
+using hal = espp::TDeck;
+#else
+#error "No hardware defined"
+#endif
 
 using namespace std::chrono_literals;
 
@@ -38,11 +45,11 @@ int drawMCUs(JPEGDRAW *pDraw) {
   auto ye = pDraw->y + pDraw->iHeight - 1;
 
   static size_t frame_buffer_index = 0;
-  uint8_t *out_img_buf = (uint8_t *)(frame_buffer_index ? get_vram1() : get_vram0());
+  uint8_t *out_img_buf = (uint8_t *)(frame_buffer_index ? hal::get().vram1() : hal::get().vram0());
   frame_buffer_index = frame_buffer_index ? 0 : 1;
   memcpy(out_img_buf, pDraw->pPixels, iCount * 2);
 
-  lcd_send_lines(xs, ys, xe, ye, out_img_buf, 0);
+  hal::get().write_lcd_lines(xs, ys, xe, ye, out_img_buf, 0);
   // returning true (1) tells JPEGDEC to continue decoding. Returning false
   // (0) would quit decoding immediately.
   return 1;
@@ -52,17 +59,29 @@ extern "C" void app_main(void) {
   espp::Logger logger({.tag = "Camera Display", .level = espp::Logger::Verbosity::INFO});
   logger.info("Bootup");
 
-  // initialize the lcd for the image display
-  lcd_init();
-
-  // initialize NVS, needed for WiFi
-  esp_err_t ret = nvs_flash_init();
-  if (ret == ESP_ERR_NVS_NO_FREE_PAGES || ret == ESP_ERR_NVS_NEW_VERSION_FOUND) {
-    logger.warn("Erasing NVS flash...");
-    ESP_ERROR_CHECK(nvs_flash_erase());
-    ret = nvs_flash_init();
+  // initialize the hardware
+  auto &hw = hal::get();
+  if (!hw.initialize_lcd()) {
+    logger.error("Could not initialize LCD");
+    return;
   }
-  ESP_ERROR_CHECK(ret);
+  static constexpr size_t pixel_buffer_size = hal::lcd_width() * 50;
+  if (!hw.initialize_display(pixel_buffer_size)) {
+    logger.error("Could not initialize display");
+    return;
+  }
+  if (!hw.initialize_touch()) {
+    logger.error("Could not initialize touch");
+    return;
+  }
+
+  std::error_code ec;
+
+#if CONFIG_ESP32_WIFI_NVS_ENABLED
+  // initialize NVS, needed for WiFi
+  espp::Nvs nvs;
+  nvs.init(ec);
+#endif
 
   // initialize WiFi
   logger.info("Initializing WiFi");
@@ -188,8 +207,6 @@ extern "C" void app_main(void) {
           },
       .log_level = espp::Logger::Verbosity::ERROR,
   });
-
-  std::error_code ec;
 
   do {
     // clear the error code
