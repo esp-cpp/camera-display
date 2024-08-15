@@ -65,7 +65,7 @@ extern "C" void app_main(void) {
     logger.error("Could not initialize LCD");
     return;
   }
-  static constexpr size_t pixel_buffer_size = hal::lcd_width() * 50;
+  static constexpr size_t pixel_buffer_size = hw.lcd_width() * 50;
   if (!hw.initialize_display(pixel_buffer_size)) {
     logger.error("Could not initialize display");
     return;
@@ -181,12 +181,12 @@ extern "C" void app_main(void) {
   auto display_task = espp::Task::make_unique({
       .name = "Display Task",
       .callback = display_task_fn,
-      .stack_size_bytes = 10 * 1024,
+      .stack_size_bytes = 5 * 1024,
   });
   display_task->start();
 
   // make the rtsp client
-  logger.info("Starting server task");
+  logger.info("Starting RTSP client");
   std::atomic<int> num_frames_received{0};
   espp::RtspClient rtsp_client({
       .server_address = mdns_service_address,

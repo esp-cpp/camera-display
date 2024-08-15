@@ -13,7 +13,7 @@ jobs:
       with:
         submodules: 'recursive'
 
-    - name: Build Examples
+    - name: Build Main
       uses: espressif/esp-idf-ci-action@v1
       with:
         esp_idf_version: v5.2.2

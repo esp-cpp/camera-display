@@ -10,6 +10,9 @@ set(EXTRA_COMPONENT_DIRS
   "components/esp-protocols/components"
 )
 
+# add compile definition ARDUINO_ARCH_ESP32, enabling jpegdec simd support
+add_compile_definitions(ARDUINO_ARCH_ESP32)
+
 add_compile_definitions(BOARD_HAS_PSRAM)
 
 set(
