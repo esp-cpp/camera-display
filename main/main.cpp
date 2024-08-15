@@ -65,7 +65,7 @@ extern "C" void app_main(void) {
     logger.error("Could not initialize LCD");
     return;
   }
-  static constexpr size_t pixel_buffer_size = hw.lcd_width() * 20;
+  static constexpr size_t pixel_buffer_size = hw.lcd_width() * 50;
   if (!hw.initialize_display(pixel_buffer_size)) {
     logger.error("Could not initialize display");
     return;
