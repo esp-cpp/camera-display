@@ -4,3 +4,6 @@
 [submodule "components/esp-protocols"]
 	path = components/esp-protocols
 	url = git@github.com:espressif/esp-protocols
+[submodule "components/jpegdec"]
+	path = components/jpegdec
+	url = https://github.com/esp-cpp/jpegdec
