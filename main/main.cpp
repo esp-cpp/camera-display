@@ -67,7 +67,7 @@ extern "C" void app_main(void) {
   }
   static constexpr size_t pixel_buffer_size = hw.lcd_width() * 20;
   if (!hw.initialize_display(pixel_buffer_size)) {
-    logger.error("Could not initialize LCD");
+    logger.error("Could not initialize display");
     return;
   }
   if (!hw.initialize_touch()) {
