@@ -278,7 +278,8 @@ void mdns_print_results(mdns_result_t *results) {
     a = r->addr;
     while (a) {
       if (a->addr.type == ESP_IPADDR_TYPE_V6) {
-        printf("  AAAA: " IPV6STR "\n", IPV62STR(a->addr.u_addr.ip6));
+        printf("  AAAA: " IPV6STR "\n",
+               IPV62STR(a->addr.u_addr.ip6)); // cppcheck-suppress unknownMacro
       } else {
         printf("  A   : " IPSTR "\n", IP2STR(&(a->addr.u_addr.ip4)));
       }
