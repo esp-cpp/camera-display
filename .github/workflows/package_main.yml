@@ -5,12 +5,16 @@ on:
     branches: [main]
   release:
     types: [published]
+  workflow_dispatch:
 
 jobs:
   build:
 
     runs-on: ubuntu-latest
     continue-on-error: false
+
+    outputs:
+      zipfile-id: ${{ steps.zip_step.outputs.artifact-id }}
 
     steps:
     - name: Checkout repo
@@ -21,19 +25,22 @@ jobs:
     - name: Build Main Code
       uses: espressif/esp-idf-ci-action@v1
       with:
-        esp_idf_version: v5.2.2
+        esp_idf_version: release-v5.4
         target: esp32s3
         path: '.'
         command: 'idf.py build'
 
     - name: Upload Build Outputs
       uses: actions/upload-artifact@v4
+      id: zip_step
       with:
         name: build-artifacts
         path: |
+          build/*.bin
+          build/*.elf
           build/bootloader/bootloader.bin
           build/partition_table/partition-table.bin
-          build/*.bin
+          build/flasher_args.json
           build/flash_args
 
     - name: Attach files to release
@@ -42,7 +49,21 @@ jobs:
       with:
         files: |
           build/*.bin
+          build/*.elf
           build/bootloader/bootloader.bin
           build/partition_table/partition-table.bin
+          build/flasher_args.json
           build/flash_args
 
+  package:
+    name: Package the binaries into an executables for Windows, MacOS, and Linux (Ubuntu)
+    needs: build
+    strategy:
+      matrix:
+        os: [windows-latest, macos-latest, ubuntu-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: esp-cpp/esp-packaged-programmer-action@v1.0.5
+        with:
+          zipfile-id: ${{ needs.build.outputs.zipfile-id }}
+          programmer-name: 'camera-display_programmer'

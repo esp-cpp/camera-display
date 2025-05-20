@@ -178,11 +178,11 @@ extern "C" void app_main(void) {
   };
   // Start the display task
   logger.info("Starting display task");
-  auto display_task = espp::Task::make_unique({
-      .name = "Display Task",
-      .callback = display_task_fn,
-      .stack_size_bytes = 5 * 1024,
-  });
+  auto display_task = espp::Task::make_unique({.callback = display_task_fn,
+                                               .task_config = {
+                                                   .name = "Display Task",
+                                                   .stack_size_bytes = 5 * 1024,
+                                               }});
   display_task->start();
 
   // make the rtsp client
@@ -278,6 +278,7 @@ void mdns_print_results(mdns_result_t *results) {
     a = r->addr;
     while (a) {
       if (a->addr.type == ESP_IPADDR_TYPE_V6) {
+        // cppcheck-suppress unknownMacro
         printf("  AAAA: " IPV6STR "\n", IPV62STR(a->addr.u_addr.ip6));
       } else {
         printf("  A   : " IPSTR "\n", IP2STR(&(a->addr.u_addr.ip4)));

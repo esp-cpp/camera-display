@@ -11,11 +11,11 @@ jobs:
     - name: Checkout repo
       uses: actions/checkout@v4
       with:
-        submodules: 'recursive'
+        submodules: true
 
     - name: Build Main
       uses: espressif/esp-idf-ci-action@v1
       with:
-        esp_idf_version: v5.2.2
+        esp_idf_version: release-v5.4
         target: esp32s3
         path: '.'
