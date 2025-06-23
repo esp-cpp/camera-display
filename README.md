@@ -62,6 +62,8 @@ info about the commands available.
 Any SSID/Password you set will be securely saved in the board's NVS, which is
 managed by the ESP-IDF WiFi subsystem.
 
+![CleanShot 2025-06-23 at 08 19 20](https://github.com/user-attachments/assets/1a2f9be7-b495-4c00-ba38-a9f4e4d6152b)
+
 ```console
 sta> help
 Commands available:
@@ -97,6 +99,8 @@ Commands available:
 	Scan for available WiFi networks.
  - memory
 	Display minimum free memory.
+ - stats
+	Display RTSP client statistics.
 ```
 
 ## Development
