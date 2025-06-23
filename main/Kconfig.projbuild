@@ -13,13 +13,13 @@ menu "Camera Display Configuration"
 
     config ESP_WIFI_SSID
         string "WiFi SSID"
-        default "myssid"
+        default ""
         help
             SSID (network name) for the camera streamer to connect to.
 
     config ESP_WIFI_PASSWORD
         string "WiFi Password"
-        default "mypassword"
+        default ""
         help
             WiFi password (WPA or WPA2) for the camera streamer to use.
 
