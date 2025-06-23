@@ -50,18 +50,6 @@ jobs:
           build/flasher_args.json
           build/flash_args
 
-    - name: Attach files to release
-      uses: softprops/action-gh-release@v2
-      if: ${{ github.event.release && github.event.action == 'published' }}
-      with:
-        files: |
-          build/*.bin
-          build/*.elf
-          build/bootloader/bootloader.bin
-          build/partition_table/partition-table.bin
-          build/flasher_args.json
-          build/flash_args
-
   package:
     name: Package the binaries into an executables for Windows, MacOS, and Linux (Ubuntu)
     needs: build
