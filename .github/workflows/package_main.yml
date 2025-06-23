@@ -19,10 +19,10 @@ jobs:
         # main (full) code
         - name: 'esp-box'
           command: |
-            idf.py -DSDKCONFIG_DEFAULTS="sdkconfig.defaults;sdkconfig.esp-box build
+            idf.py -DSDKCONFIG_DEFAULTS="sdkconfig.defaults;sdkconfig.defaults.esp-box build
         - name: 't-deck'
           command: |
-            idf.py -DSDKCONFIG_DEFAULTS="sdkconfig.defaults;sdkconfig.t-deck build
+            idf.py -DSDKCONFIG_DEFAULTS="sdkconfig.defaults;sdkconfig.defaults.t-deck build
 
     steps:
     - name: Checkout repo
