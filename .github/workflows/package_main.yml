@@ -29,6 +29,7 @@ jobs:
       uses: actions/checkout@v4
       with:
         submodules: 'recursive'
+        fetch-tags: true
 
     - name: Build Main Code
       uses: espressif/esp-idf-ci-action@v1
@@ -49,6 +50,22 @@ jobs:
           build/partition_table/partition-table.bin
           build/flasher_args.json
           build/flash_args
+
+    - name: Zip up build files for release using matrix build name + release tag name
+      if: ${{ github.event.release && github.event.action == 'published' }}
+      shell: bash
+      run: |
+        # zip up just the files we uploaded for the release
+        zip_name=camera-display-${{ matrix.build.name }}_$(git describe --tags --dirty).zip"
+        cd ${{ matrix.build.path }}
+        zip -r -j $zip_name build/*.bin build/*.elf build/bootloader/bootloader.bin build/partition_table/partition-table.bin build/flasher_args.json build/flash_args
+        echo "artifact_path=${{ matrix.build.path }}/$zip_name" >> "$GITHUB_ENV"
+
+    - name: Attach files to release
+      uses: softprops/action-gh-release@v2
+      if: ${{ github.event.release && github.event.action == 'published' }}
+      with:
+        files: ${{ env.artifact_path }}
 
   package:
     name: Package the binaries into an executables for Windows, MacOS, and Linux (Ubuntu)
