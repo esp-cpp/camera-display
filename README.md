@@ -38,8 +38,6 @@ connection using its built-in CLI.
 
 ### Program
 
-The ESP32-TimerCam will require one-time programming to function.
-
 Download the release `programmer` executable from the latest [releases
 page](https://github.com/esp-cpp/camera-display/releases) for `windows`,
 `macos`, or `linux` - depending on which computer you want to use to perform the
