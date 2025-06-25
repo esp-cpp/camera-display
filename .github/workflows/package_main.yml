@@ -30,6 +30,7 @@ jobs:
       with:
         submodules: 'recursive'
         fetch-tags: true
+        ref: ${{ github.ref }}
 
     - name: Build Main Code
       uses: espressif/esp-idf-ci-action@v1
