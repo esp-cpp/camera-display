@@ -58,9 +58,8 @@ jobs:
       run: |
         # zip up just the files we uploaded for the release
         zip_name="camera-display-${{ matrix.build.name }}_$(git describe --tags --dirty).zip"
-        cd ${{ matrix.build.path }}
         zip -r -j $zip_name build/*.bin build/*.elf build/bootloader/bootloader.bin build/partition_table/partition-table.bin build/flasher_args.json build/flash_args
-        echo "artifact_path=${{ matrix.build.path }}/$zip_name" >> "$GITHUB_ENV"
+        echo "artifact_path=$zip_name" >> "$GITHUB_ENV"
 
     - name: Attach files to release
       uses: softprops/action-gh-release@v2
