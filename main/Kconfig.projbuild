@@ -9,6 +9,8 @@ menu "Camera Display Configuration"
             bool "ESP BOX (ESP32-S3-BOX or ESP32-S3-BOX-3)"
         config HARDWARE_TDECK
             bool "LILYGO T DECK"
+        config HARDWARE_BYTE90
+            bool "BYTE90"
     endchoice
 
     config ESP_WIFI_SSID

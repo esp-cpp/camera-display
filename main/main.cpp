@@ -27,6 +27,9 @@ using hal = espp::EspBox;
 #elif CONFIG_HARDWARE_TDECK
 #include "t-deck.hpp"
 using hal = espp::TDeck;
+#elif CONFIG_HARDWARE_BYTE90
+#include "byte90.hpp"
+using hal = espp::Byte90;
 #else
 #error "No hardware defined"
 #endif
@@ -35,6 +38,8 @@ using namespace std::chrono_literals;
 
 static espp::Logger logger({.tag = "Camera Display", .level = espp::Logger::Verbosity::INFO});
 
+static uint8_t *vram0 = nullptr;
+static uint8_t *vram1 = nullptr;
 static std::atomic<int> num_frames_received{0};
 static std::atomic<int> num_frames_displayed{0};
 static std::atomic<float> elapsed{0};
@@ -43,10 +48,11 @@ static std::chrono::high_resolution_clock::time_point connected_time;
 std::unique_ptr<espp::Task> start_rtsp_task;
 static std::shared_ptr<espp::RtspClient> rtsp_client;
 
+static constexpr size_t vram_size = hal::lcd_width() * 50 * 2; // 50 lines of 16-bit pixels
 static std::mutex jpeg_mutex;
 static std::condition_variable jpeg_cv;
 static constexpr size_t MAX_JPEG_FRAMES = 2;
-static std::deque<std::unique_ptr<espp::JpegFrame>> jpeg_frames;
+static std::deque<std::shared_ptr<espp::JpegFrame>> jpeg_frames;
 
 bool start_rtsp_client(std::mutex &m, std::condition_variable &cv, bool &task_notified);
 int drawMCUs(JPEGDRAW *pDraw);
@@ -64,13 +70,18 @@ extern "C" void app_main(void) {
     logger.error("Could not initialize LCD");
     return;
   }
-  static constexpr size_t pixel_buffer_size = hw.lcd_width() * 50;
-  if (!hw.initialize_display(pixel_buffer_size)) {
-    logger.error("Could not initialize display");
-    return;
-  }
-  if (!hw.initialize_touch()) {
-    logger.error("Could not initialize touch");
+
+  // allocate some DMA-capable VRAM for jpeg decoding / display operations
+  vram0 = (uint8_t *)heap_caps_malloc(vram_size, MALLOC_CAP_DMA | MALLOC_CAP_8BIT);
+  vram1 = (uint8_t *)heap_caps_malloc(vram_size, MALLOC_CAP_DMA | MALLOC_CAP_8BIT);
+  if (!vram0 || !vram1) {
+    logger.error("Could not allocate VRAM for LCD");
+    if (vram0) {
+      heap_caps_free(vram0);
+    }
+    if (vram1) {
+      heap_caps_free(vram1);
+    }
     return;
   }
 
@@ -106,6 +117,8 @@ extern "C" void app_main(void) {
              logger.info("Stopping RTSP Client");
              // stop and delete the RTSP client
              rtsp_client.reset();
+             // free mdns resources
+             mdns_free();
            },
        .on_got_ip =
            [](ip_event_got_ip_t *eventdata) {
@@ -125,6 +138,28 @@ extern "C" void app_main(void) {
   espp::WifiStaMenu sta_menu(wifi_sta);
   auto root_menu = sta_menu.get();
   root_menu->Insert(
+      "log_level", {"log level <debug, info, warn, error, none>"},
+      [](std::ostream &out, const std::string &level_str) {
+        espp::Logger::Verbosity level;
+        if (level_str == "debug") {
+          level = espp::Logger::Verbosity::DEBUG;
+        } else if (level_str == "info") {
+          level = espp::Logger::Verbosity::INFO;
+        } else if (level_str == "warn") {
+          level = espp::Logger::Verbosity::WARN;
+        } else if (level_str == "error") {
+          level = espp::Logger::Verbosity::ERROR;
+        } else if (level_str == "none") {
+          level = espp::Logger::Verbosity::NONE;
+        } else {
+          out << "Unknown log level: " << level_str << std::endl;
+          return;
+        }
+        logger.set_verbosity(level);
+        out << "Log level set to: " << level_str << std::endl;
+      },
+      "Set the log level for the application. Options: debug, info, warn, error, none.");
+  root_menu->Insert(
       "memory",
       [](std::ostream &out) {
         out << "Minimum free memory: " << heap_caps_get_minimum_free_size(MALLOC_CAP_DEFAULT)
@@ -136,7 +171,8 @@ extern "C" void app_main(void) {
       [](std::ostream &out) {
         auto now = std::chrono::high_resolution_clock::now();
         float disp_elapsed = std::chrono::duration<float>(now - connected_time).count();
-        out << fmt::format("Received {} frames, Framerate: {} FPS\n", num_frames_received,
+        out << fmt::format("Received {} frames, displayed {} frames, Framerate: {} FPS\n",
+                           num_frames_received, num_frames_displayed,
                            num_frames_displayed / disp_elapsed);
       },
       "Display RTSP client statistics.");
@@ -187,6 +223,9 @@ bool start_rtsp_client(std::mutex &m, std::condition_variable &cv, bool &task_no
   }
   logger.info("Found RTSP server: {}:{}", mdns_service_address, mdns_service_port);
 
+  // free mDNS resources
+  mdns_free();
+
   // make the rtsp client
   logger.info("Starting RTSP client");
   rtsp_client = std::make_shared<espp::RtspClient>(espp::RtspClient::Config{
@@ -194,7 +233,7 @@ bool start_rtsp_client(std::mutex &m, std::condition_variable &cv, bool &task_no
       .rtsp_port = mdns_service_port,
       .path = "/mjpeg/1",
       .on_jpeg_frame =
-          [](std::unique_ptr<espp::JpegFrame> jpeg_frame) {
+          [](std::shared_ptr<espp::JpegFrame> jpeg_frame) {
             {
               std::lock_guard<std::mutex> lock(jpeg_mutex);
               if (jpeg_frames.size() >= MAX_JPEG_FRAMES) {
@@ -262,8 +301,13 @@ int drawMCUs(JPEGDRAW *pDraw) {
   auto xe = pDraw->x + pDraw->iWidth - 1;
   auto ye = pDraw->y + pDraw->iHeight - 1;
 
+  if (iCount * 2 > vram_size) {
+    logger.error("Not enough VRAM for image: {} B, available: {} B", iCount * 2, vram_size);
+    return 0; // not enough VRAM to draw the image
+  }
+
   static size_t frame_buffer_index = 0;
-  uint8_t *out_img_buf = (uint8_t *)(frame_buffer_index ? hal::get().vram1() : hal::get().vram0());
+  uint8_t *out_img_buf = (uint8_t *)(frame_buffer_index ? vram1 : vram0);
   frame_buffer_index = frame_buffer_index ? 0 : 1;
   memcpy(out_img_buf, pDraw->pPixels, iCount * 2);
 
@@ -279,7 +323,7 @@ bool display_task_fn(std::mutex &m, std::condition_variable &cv) {
   static JPEGDEC jpeg;
   static espp::Logger logger({.tag = "Decoder", .level = espp::Logger::Verbosity::WARN});
 
-  std::unique_ptr<espp::JpegFrame> image;
+  std::shared_ptr<espp::JpegFrame> image;
   {
     // wait for a frame to be available
     std::unique_lock<std::mutex> lock(jpeg_mutex);
@@ -337,7 +381,7 @@ void mdns_print_results(mdns_result_t *results) {
       if (a->addr.type == ESP_IPADDR_TYPE_V6) {
         // cppcheck-suppress unknownMacro
         printf("  AAAA: " IPV6STR "\n", IPV62STR(a->addr.u_addr.ip6));
-      } else {
+      } else if (a->addr.type == ESP_IPADDR_TYPE_V4) {
         printf("  A   : " IPSTR "\n", IP2STR(&(a->addr.u_addr.ip4)));
       }
       a = a->next;
@@ -348,33 +392,51 @@ void mdns_print_results(mdns_result_t *results) {
 
 bool find_mdns_service(const char *service_name, const char *proto, std::string &host, int &port,
                        int timeout_ms) {
-  fmt::print("Query PTR: {}.{}.local\n", service_name, proto);
+  logger.debug("Query PTR: {}.{}.local", service_name, proto);
 
   mdns_result_t *results = NULL;
   int max_results = 20;
   esp_err_t err = mdns_query_ptr(service_name, proto, timeout_ms, max_results, &results);
   if (err) {
-    fmt::print("Query Failed\n");
+    logger.error("Query Failed");
     return false;
   }
   if (!results) {
-    fmt::print("No results found!\n");
+    logger.info("No results found!");
     return false;
   }
 
+  bool found_service = false;
   mdns_print_results(results);
   // now set the host ip address string and port number from the results
   mdns_result_t *r = results;
-  if (r->addr) {
-    if (r->addr->addr.type == ESP_IPADDR_TYPE_V6) {
-      host = fmt::format(IPV6STR, IPV62STR(r->addr->addr.u_addr.ip6));
-    } else {
-      host = fmt::format("{}.{}.{}.{}", IP2STR(&(r->addr->addr.u_addr.ip4)));
+  while (r) {
+    port = 0;     // reset port to 0 for each result
+    host.clear(); // reset host string for each result
+    mdns_ip_addr_t *addr = r->addr;
+    while (addr) {
+      if (addr->addr.type == ESP_IPADDR_TYPE_V6) {
+        host = fmt::format("{:02x}:{:02x}:{:02x}:{:02x}:{:02x}:{:02x}",
+                           IPV62STR(addr->addr.u_addr.ip6));
+        break;
+      } else if (addr->addr.type == ESP_IPADDR_TYPE_V4) {
+        host = fmt::format("{}.{}.{}.{}", IP2STR(&(addr->addr.u_addr.ip4)));
+        break;
+      }
+      addr = addr->next;
     }
-  }
-  if (r->port) {
-    port = r->port;
+    if (r->port) {
+      port = r->port;
+    }
+    // if we found a valid host and port, we can break out of the loop
+    if (port > 0 && !host.empty()) {
+      found_service = true;
+      break;
+    }
+    // we got here, so we didn't find a viable service in this result, so go to
+    // the next one
+    r = r->next;
   }
   mdns_query_results_free(results);
-  return true;
+  return found_service;
 }
