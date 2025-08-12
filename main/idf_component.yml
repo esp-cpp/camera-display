@@ -3,6 +3,7 @@ dependencies:
   ## Required IDF version
   idf:
     version: '>=5.0'
+  espp/byte90: '>=1.0'
   espp/rtsp: '>=1.0'
   espp/esp-box: '>=1.0'
   espp/wifi: '>=1.0'

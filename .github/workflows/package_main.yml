@@ -17,6 +17,9 @@ jobs:
       matrix:
         build:
         # main (full) code
+        - name: 'byte90'
+          command: |
+            idf.py -DSDKCONFIG_DEFAULTS="sdkconfig.defaults;sdkconfig.defaults.byte90" build
         - name: 'esp-box'
           command: |
             idf.py -DSDKCONFIG_DEFAULTS="sdkconfig.defaults;sdkconfig.defaults.esp-box" build
@@ -74,6 +77,7 @@ jobs:
       matrix:
         os: [windows-latest, macos-latest, ubuntu-latest]
         build:
+          - name: 'byte90'
           - name: 'esp-box'
           - name: 't-deck'
     runs-on: ${{ matrix.os }}
