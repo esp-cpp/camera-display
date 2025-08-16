@@ -12,4 +12,5 @@ dependencies:
   espp/socket: '>=1.0'
   espp/nvs: '>=1.0'
   espp/task: '>=1.0'
+  espp/ws-s3-touch: '>=1.0'
   espressif/mdns: '>=1.8'

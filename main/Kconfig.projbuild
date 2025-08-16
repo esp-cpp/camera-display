@@ -11,6 +11,8 @@ menu "Camera Display Configuration"
             bool "LILYGO T DECK"
         config HARDWARE_BYTE90
             bool "BYTE90"
+        config HARDWARE_WS_S3_TOUCH
+            bool "Waveshare S3 Touch"
     endchoice
 
     config ESP_WIFI_SSID
