@@ -30,14 +30,22 @@ using hal = espp::TDeck;
 #elif CONFIG_HARDWARE_BYTE90
 #include "byte90.hpp"
 using hal = espp::Byte90;
+#elif CONFIG_HARDWARE_WS_S3_TOUCH
+#include "ws-s3-touch.hpp"
+using hal = espp::WsS3Touch;
 #else
 #error "No hardware defined"
 #endif
 
 using namespace std::chrono_literals;
+using DisplayDriver = hal::DisplayDriver;
 
 static espp::Logger logger({.tag = "Camera Display", .level = espp::Logger::Verbosity::INFO});
 
+// frame buffers for decoding into
+static uint8_t *fb0 = nullptr;
+static uint8_t *fb1 = nullptr;
+// DRAM for actual vram (used by SPI to send to LCD)
 static uint8_t *vram0 = nullptr;
 static uint8_t *vram1 = nullptr;
 static std::atomic<int> num_frames_received{0};
@@ -45,13 +53,24 @@ static std::atomic<int> num_frames_displayed{0};
 static std::atomic<float> elapsed{0};
 static std::chrono::high_resolution_clock::time_point connected_time;
 
+// video
+static std::unique_ptr<espp::Task> video_task_{nullptr};
+static QueueHandle_t video_queue_{nullptr};
+static bool initialize_video();
+static bool video_task_callback(std::mutex &m, std::condition_variable &cv, bool &task_notified);
+static void clear_screen();
+static void push_frame(const void *frame);
+
+// rtsp
 std::unique_ptr<espp::Task> start_rtsp_task;
 static std::shared_ptr<espp::RtspClient> rtsp_client;
 
-static constexpr size_t vram_size = hal::lcd_width() * 50 * 2; // 50 lines of 16-bit pixels
+static constexpr int num_rows_in_vram = 50;
+static constexpr size_t vram_size = hal::lcd_width() * num_rows_in_vram * sizeof(hal::Pixel);
+static constexpr size_t fb_size = hal::lcd_width() * hal::lcd_height() * sizeof(hal::Pixel);
 static std::mutex jpeg_mutex;
 static std::condition_variable jpeg_cv;
-static constexpr size_t MAX_JPEG_FRAMES = 2;
+static constexpr size_t MAX_JPEG_FRAMES = 3;
 static std::deque<std::shared_ptr<espp::JpegFrame>> jpeg_frames;
 
 bool start_rtsp_client(std::mutex &m, std::condition_variable &cv, bool &task_notified);
@@ -71,6 +90,21 @@ extern "C" void app_main(void) {
     return;
   }
 
+  // allocate some frame buffers for jpeg decoding, which should be screen-size
+  // and in PSRAM
+  fb0 = (uint8_t *)heap_caps_malloc(fb_size, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+  fb1 = (uint8_t *)heap_caps_malloc(fb_size, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+  if (!fb0 || !fb1) {
+    logger.error("Could not allocate frame buffers for LCD");
+    if (fb0) {
+      heap_caps_free(fb0);
+    }
+    if (fb1) {
+      heap_caps_free(fb1);
+    }
+    return;
+  }
+
   // allocate some DMA-capable VRAM for jpeg decoding / display operations
   vram0 = (uint8_t *)heap_caps_malloc(vram_size, MALLOC_CAP_DMA | MALLOC_CAP_8BIT);
   vram1 = (uint8_t *)heap_caps_malloc(vram_size, MALLOC_CAP_DMA | MALLOC_CAP_8BIT);
@@ -84,6 +118,19 @@ extern "C" void app_main(void) {
     }
     return;
   }
+
+  logger.info("Allocated frame buffers: fb0 = {} B, fb1 = {} B", fb_size, fb_size);
+  logger.info("Allocated VRAM: vram0 = {} B, vram1 = {} B", vram_size, vram_size);
+
+  // initialize the video task
+  if (!initialize_video()) {
+    logger.error("Could not initialize video task");
+    return;
+  }
+
+  // clear the screen
+  logger.info("Clearing screen");
+  clear_screen();
 
   // create the parsing and display task
   logger.info("Starting display task");
@@ -107,6 +154,7 @@ extern "C" void app_main(void) {
   espp::WifiSta wifi_sta(
       {.ssid = CONFIG_ESP_WIFI_SSID,
        .password = CONFIG_ESP_WIFI_PASSWORD,
+       // .phy_rate = WIFI_PHY_RATE_MCS5_SGI,
        .num_connect_retries = CONFIG_ESP_MAXIMUM_RETRY,
        .on_connected = []() { logger.info("Connected to WiFi, waiting for IP address"); },
        .on_disconnected =
@@ -292,6 +340,7 @@ bool start_rtsp_client(std::mutex &m, std::condition_variable &cv, bool &task_no
   return true; // we're done with our work, no need to run again, so stop the task
 }
 
+static size_t frame_buffer_index = 0;
 // function for drawing the minimum compressible units
 // cppcheck-suppress constParameterCallback
 int drawMCUs(JPEGDRAW *pDraw) {
@@ -301,17 +350,16 @@ int drawMCUs(JPEGDRAW *pDraw) {
   auto xe = pDraw->x + pDraw->iWidth - 1;
   auto ye = pDraw->y + pDraw->iHeight - 1;
 
-  if (iCount * 2 > vram_size) {
-    logger.error("Not enough VRAM for image: {} B, available: {} B", iCount * 2, vram_size);
-    return 0; // not enough VRAM to draw the image
+  uint16_t *dst = (uint16_t *)(frame_buffer_index ? fb1 : fb0);
+  uint16_t *src = (uint16_t *)(pDraw->pPixels);
+  // copy the pixels from the JPEG draw structure to the framebuffer at the
+  // appropriate position
+  for (int row = 0; row < pDraw->iHeight; row++) {
+    // copy a whole row at a time
+    memcpy(&dst[(ys + row) * hal::lcd_width() + xs], &src[row * pDraw->iWidth],
+           pDraw->iWidth * sizeof(uint16_t));
   }
 
-  static size_t frame_buffer_index = 0;
-  uint8_t *out_img_buf = (uint8_t *)(frame_buffer_index ? vram1 : vram0);
-  frame_buffer_index = frame_buffer_index ? 0 : 1;
-  memcpy(out_img_buf, pDraw->pPixels, iCount * 2);
-
-  hal::get().write_lcd_lines(xs, ys, xe, ye, out_img_buf, 0);
   // returning true (1) tells JPEGDEC to continue decoding. Returning false
   // (0) would quit decoding immediately.
   return 1;
@@ -335,19 +383,25 @@ bool display_task_fn(std::mutex &m, std::condition_variable &cv) {
   auto image_data = image->get_data();
   logger.info("Decoding image of size {} B, shape = {} x {}", image_data.size(), image->get_width(),
               image->get_height());
+  // update to the current frame buffer index
+  frame_buffer_index = frame_buffer_index ^ 0x01;
   if (jpeg.openRAM((uint8_t *)(image_data.data()), image_data.size(), drawMCUs)) {
     logger.debug("Image size: {} x {}, orientation: {}, bpp: {}", jpeg.getWidth(), jpeg.getHeight(),
                  jpeg.getOrientation(), jpeg.getBpp());
     jpeg.setPixelType(RGB565_BIG_ENDIAN);
-    if (!jpeg.decode(0, 0, 0)) {
-      logger.error("Error decoding");
+    // decode the JPEG image
+    if (!jpeg.decode(0, 0, JPEG_USES_DMA)) {
+      logger.debug("Error decoding");
+    } else {
+      num_frames_displayed += 1;
+      // push the frame for rendering
+      push_frame(frame_buffer_index ? fb1 : fb0);
     }
   } else {
     logger.error("error opening jpeg image");
   }
   auto end = std::chrono::high_resolution_clock::now();
   elapsed = std::chrono::duration<float>(end - start).count();
-  num_frames_displayed += 1;
   // signal that we do not want to stop the task
   return false;
 }
@@ -439,4 +493,84 @@ bool find_mdns_service(const char *service_name, const char *proto, std::string 
   }
   mdns_query_results_free(results);
   return found_service;
+}
+
+/// Video related functions:
+
+bool initialize_video() {
+  if (video_queue_ || video_task_) {
+    return true;
+  }
+
+  video_queue_ = xQueueCreate(1, sizeof(uint16_t *));
+  using namespace std::placeholders;
+  video_task_ = espp::Task::make_unique({
+      .callback = std::bind(video_task_callback, _1, _2, _3),
+      .task_config =
+          {.name = "video task", .stack_size_bytes = 4 * 1024, .priority = 20, .core_id = 1},
+  });
+  video_task_->start();
+  return true;
+}
+
+void clear_screen() {
+  static int buffer = 0;
+  xQueueSend(video_queue_, &buffer, portMAX_DELAY);
+}
+
+void IRAM_ATTR push_frame(const void *frame) { xQueueSend(video_queue_, &frame, portMAX_DELAY); }
+
+bool video_task_callback(std::mutex &m, std::condition_variable &cv, bool &task_notified) {
+  const void *_frame_ptr;
+  if (xQueueReceive(video_queue_, &_frame_ptr, portMAX_DELAY) != pdTRUE) {
+    return false;
+  }
+  static constexpr int num_lines_to_write = num_rows_in_vram;
+  using Pixel = hal::Pixel;
+
+  static auto &hw = hal::get();
+
+  auto lcd_height = hw.lcd_height();
+  auto lcd_width = hw.lcd_width();
+  int x_offset = 0;
+  int y_offset = 0;
+  DisplayDriver::get_offset(x_offset, y_offset);
+
+  static uint16_t vram_index = 0; // has to be static so that it persists between calls
+
+  // special case: if _frame_ptr is null, then we simply fill the screen with 0
+  if (_frame_ptr == nullptr) {
+    for (int y = 0; y < lcd_height; y += num_lines_to_write) {
+      Pixel *_buf = (Pixel *)((uint32_t)vram0 * (vram_index ^ 0x01) + (uint32_t)vram1 * vram_index);
+      int num_lines = std::min<int>(num_lines_to_write, lcd_height - y);
+      // memset the buffer to 0
+      memset(_buf, 0, lcd_width * num_lines * sizeof(Pixel));
+      hw.write_lcd_lines(x_offset, y + y_offset, x_offset + lcd_width - 1,
+                         y + y_offset + num_lines - 1, (uint8_t *)&_buf[0], 0);
+      vram_index = vram_index ^ 0x01;
+    }
+
+    // now return
+    return false;
+  }
+
+  for (int y = 0; y < lcd_height; y += num_lines_to_write) {
+    uint16_t *_buf =
+        (uint16_t *)((uint32_t)vram0 * (vram_index ^ 0x01) + (uint32_t)vram1 * vram_index);
+    int num_lines = std::min<int>(num_lines_to_write, lcd_height - y);
+    const uint16_t *_frame = (const uint16_t *)_frame_ptr;
+    for (int i = 0; i < num_lines; i++) {
+      // write two pixels (32 bits) at a time because it's faster
+      for (int j = 0; j < lcd_width; j += 2) {
+        uint32_t *src = (uint32_t *)&_frame[(y + i) * lcd_width + j];
+        uint32_t *dst = (uint32_t *)&_buf[i * lcd_width + j];
+        dst[0] = src[0]; // copy two pixels (32 bits) at a time
+      }
+    }
+    hw.write_lcd_lines(x_offset, y + y_offset, x_offset + lcd_width - 1,
+                       y + y_offset + num_lines - 1, (uint8_t *)&_buf[0], 0);
+    vram_index = vram_index ^ 0x01;
+  }
+
+  return false;
 }

@@ -15,7 +15,7 @@ add_compile_definitions(BOARD_HAS_PSRAM)
 
 set(
   COMPONENTS
-  "main esptool_py esp_psram jpegdec task format nvs esp-box t-deck monitor wifi socket rtsp mdns"
+  "main esptool_py esp_psram jpegdec task format nvs esp-box t-deck monitor wifi ws-s3-touch socket rtsp mdns"
   CACHE STRING
   "List of components to include"
 )
