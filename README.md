@@ -109,11 +109,11 @@ development environment to be able to build and flash your target hardware.
 ### Environment
 
 This project is an ESP-IDF project, currently [ESP-IDF
-v.5.4](https://github.com/espressif/esp-idf).
+v.5.5.1](https://github.com/espressif/esp-idf).
 
-For information about setting up `ESP-IDF v5.4`, please see [the official
+For information about setting up `ESP-IDF v5.5.1`, please see [the official
 ESP-IDF getting started
-documentation](https://docs.espressif.com/projects/esp-idf/en/v5.4/esp32s3/get-started/index.html).
+documentation](https://docs.espressif.com/projects/esp-idf/en/v5.5.1/esp32s3/get-started/index.html).
 
 ### Build and Flash
 

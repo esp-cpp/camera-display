@@ -7,6 +7,12 @@ on:
     types: [published]
   workflow_dispatch:
 
+env:
+  APP_NAME: 'Camera Display'
+  IDF_VERSION: 'v5.5.1'
+  IDF_COMPONENT_MANAGER: "1" # whether to enable the component manager or not
+  FLASH_TOTAL_OVERRIDE: '4194304' # 4MB flash app partition for main app
+
 jobs:
   build:
 
@@ -18,12 +24,15 @@ jobs:
         build:
         # main (full) code
         - name: 'byte90'
+          target: esp32s3
           command: |
             idf.py -DSDKCONFIG_DEFAULTS="sdkconfig.defaults;sdkconfig.defaults.byte90" build
         - name: 'esp-box'
+          target: esp32s3
           command: |
             idf.py -DSDKCONFIG_DEFAULTS="sdkconfig.defaults;sdkconfig.defaults.esp-box" build
         - name: 't-deck'
+          target: esp32s3
           command: |
             idf.py -DSDKCONFIG_DEFAULTS="sdkconfig.defaults;sdkconfig.defaults.t-deck" build
 
@@ -38,8 +47,8 @@ jobs:
     - name: Build Main Code
       uses: espressif/esp-idf-ci-action@v1
       with:
-        esp_idf_version: release-v5.4
-        target: esp32s3
+        esp_idf_version: ${{ env.IDF_VERSION }}
+        target: ${{ matrix.build.target }}
         path: '.'
         command: ${{ matrix.build.command }}
 
@@ -69,6 +78,19 @@ jobs:
       if: ${{ github.event.release && github.event.action == 'published' }}
       with:
         files: ${{ env.artifact_path }}
+
+    - name: Determine Size Delta
+      # only run this on the esp-box build and if the release is published
+      if: ${{ github.event.release && github.event.action == 'published' && matrix.build.name == 'esp-box' }}
+      uses: esp-cpp/esp-idf-size-delta@v1
+      with:
+        app_name: ${{ env.APP_NAME }}
+        app_path: "."
+        idf_target: ${{ matrix.build.target }}
+        idf_version: ${{ env.IDF_VERSION }}
+        idf_component_manager: ${{ env.IDF_COMPONENT_MANAGER }}
+        flash_total_override: ${{ env.FLASH_TOTAL_OVERRIDE }}
+        post_comment: 'false'
 
   package:
     name: Package the binaries into an executables for Windows, MacOS, and Linux (Ubuntu)
