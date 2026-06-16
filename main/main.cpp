@@ -114,7 +114,8 @@ static float get_audio_volume_for_touch_x(uint16_t touch_x) {
 
 static std::pair<size_t, size_t> get_next_rtp_port_pair() {
   static std::atomic<size_t> next_rtp_slot{0};
-  constexpr size_t num_rtp_slots = ((max_rtp_port - min_rtp_port) / 2) + 1;
+  constexpr size_t max_rtp_start_port = max_rtp_port - 1;
+  constexpr size_t num_rtp_slots = ((max_rtp_start_port - min_rtp_port) / 2) + 1;
   size_t rtp_port = min_rtp_port + 2 * (next_rtp_slot.fetch_add(1) % num_rtp_slots);
   return {rtp_port, rtp_port + 1};
 }
