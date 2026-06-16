@@ -72,6 +72,7 @@ static std::atomic<int> active_audio_track_id{-1};
 static std::atomic<int> active_audio_channels{0};
 static std::atomic<int> active_audio_sample_rate{0};
 static std::atomic<int> active_audio_output_sample_rate{0};
+static std::atomic<float> desired_audio_volume_percent{100.0f};
 
 static constexpr int num_rows_in_vram = 16;
 static constexpr size_t vram_size = hal::lcd_width() * num_rows_in_vram * sizeof(hal::Pixel);
@@ -89,6 +90,27 @@ static constexpr bool bsp_supports_pcm_audio_output = true;
 #else
 static constexpr bool bsp_supports_pcm_audio_output = false;
 #endif
+
+#if CONFIG_HARDWARE_BOX || CONFIG_HARDWARE_TDECK || CONFIG_HARDWARE_WS_S3_TOUCH
+static constexpr bool bsp_supports_touchscreen = true;
+#else
+static constexpr bool bsp_supports_touchscreen = false;
+#endif
+
+static void set_audio_output_volume(float volume_percent) {
+  auto clamped_volume_percent = std::clamp(volume_percent, 0.0f, 100.0f);
+  desired_audio_volume_percent = clamped_volume_percent;
+  if constexpr (bsp_supports_pcm_audio_output) {
+    hal::get().volume(clamped_volume_percent);
+  }
+}
+
+static float get_audio_volume_for_touch_x(uint16_t touch_x) {
+  constexpr float max_touch_x =
+      hal::lcd_width() > 1 ? static_cast<float>(hal::lcd_width() - 1) : 1.0f;
+  auto clamped_touch_x = std::clamp(static_cast<float>(touch_x), 0.0f, max_touch_x);
+  return (clamped_touch_x / max_touch_x) * 100.0f;
+}
 
 static std::pair<size_t, size_t> get_next_rtp_port_pair() {
   static std::atomic<size_t> next_rtp_slot{0};
@@ -163,6 +185,20 @@ extern "C" void app_main(void) {
   // clear the screen
   logger.info("Clearing screen");
   clear_screen();
+
+  if constexpr (bsp_supports_touchscreen && bsp_supports_pcm_audio_output) {
+    auto touch_callback = [](const auto &touch) {
+      auto &hw = hal::get();
+      auto touchpad_data = hw.touchpad_convert(touch);
+      if (touchpad_data.num_touch_points == 0) {
+        return;
+      }
+      set_audio_output_volume(get_audio_volume_for_touch_x(touchpad_data.x));
+    };
+    if (!hw.initialize_touch(touch_callback)) {
+      logger.warn("Could not initialize touch input for audio volume control");
+    }
+  }
 
   // create the parsing and display task
   logger.info("Starting display task");
@@ -461,7 +497,7 @@ static bool ensure_audio_output_ready(uint32_t sample_rate_hz) {
   if (hw.audio_sample_rate() != sample_rate_hz) {
     hw.audio_sample_rate(sample_rate_hz);
   }
-  hw.volume(100.0f);
+  set_audio_output_volume(desired_audio_volume_percent.load());
   clear_audio_output_buffer();
   return true;
 }
