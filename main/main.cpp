@@ -53,7 +53,6 @@ static uint8_t *vram1 = nullptr;
 static std::atomic<int> num_frames_received{0};
 static std::atomic<int> num_frames_displayed{0};
 static std::atomic<int> num_audio_frames_received{0};
-static std::atomic<float> elapsed{0};
 static std::chrono::high_resolution_clock::time_point connected_time;
 
 // video
@@ -166,6 +165,8 @@ extern "C" void app_main(void) {
     if (vram1) {
       heap_caps_free(vram1);
     }
+    heap_caps_free(fb0);
+    heap_caps_free(fb1);
     return;
   }
 
@@ -179,6 +180,10 @@ extern "C" void app_main(void) {
   // initialize the video task
   if (!initialize_video()) {
     logger.error("Could not initialize video task");
+    heap_caps_free(fb0);
+    heap_caps_free(fb1);
+    heap_caps_free(vram0);
+    heap_caps_free(vram1);
     return;
   }
 
@@ -425,6 +430,10 @@ bool start_rtsp_client(std::mutex &m, std::condition_variable &cv, bool &task_no
     if (ec) {
       logger.error("RTSP startup failed: {}", ec.message());
     } else {
+      // reset the per-session frame counters so the stats command reports the
+      // framerate for the current session rather than across all reconnects
+      num_frames_received = 0;
+      num_frames_displayed = 0;
       connected_time = std::chrono::high_resolution_clock::now();
       logger.info("RTSP playback started");
       bool stop_requested = false;
@@ -715,7 +724,6 @@ bool display_task_fn(std::mutex &m, std::condition_variable &cv) {
     image = std::move(jpeg_frames.front());
     jpeg_frames.pop_front();
   }
-  static auto start = std::chrono::high_resolution_clock::now();
   auto image_data = image->get_data();
   logger.info("Decoding image of size {} B, shape = {} x {}", image_data.size(), image->get_width(),
               image->get_height());
@@ -738,8 +746,6 @@ bool display_task_fn(std::mutex &m, std::condition_variable &cv) {
   } else {
     logger.error("error opening jpeg image");
   }
-  auto end = std::chrono::high_resolution_clock::now();
-  elapsed = std::chrono::duration<float>(end - start).count();
   // signal that we do not want to stop the task
   return false;
 }
@@ -808,7 +814,7 @@ bool find_mdns_service(const char *service_name, const char *proto, std::string 
     mdns_ip_addr_t *addr = r->addr;
     while (addr) {
       if (addr->addr.type == ESP_IPADDR_TYPE_V6) {
-        host = fmt::format("{:02x}:{:02x}:{:02x}:{:02x}:{:02x}:{:02x}",
+        host = fmt::format("{:04x}:{:04x}:{:04x}:{:04x}:{:04x}:{:04x}:{:04x}:{:04x}",
                            IPV62STR(addr->addr.u_addr.ip6));
         break;
       } else if (addr->addr.type == ESP_IPADDR_TYPE_V4) {
@@ -840,7 +846,7 @@ bool initialize_video() {
     return true;
   }
 
-  video_queue_ = xQueueCreate(1, sizeof(uint16_t *));
+  video_queue_ = xQueueCreate(1, sizeof(const void *));
   using namespace std::placeholders;
   video_task_ = espp::Task::make_unique({
       .callback = std::bind(video_task_callback, _1, _2, _3),
@@ -857,11 +863,14 @@ void clear_jpeg_frames() {
 }
 
 void clear_screen() {
-  static int buffer = 0;
-  xQueueSend(video_queue_, &buffer, portMAX_DELAY);
+  // a null frame pointer signals the video task to blank the screen
+  const void *null_frame = nullptr;
+  xQueueSend(video_queue_, &null_frame, portMAX_DELAY);
 }
 
-void IRAM_ATTR push_frame(const void *frame) { xQueueSend(video_queue_, &frame, portMAX_DELAY); }
+static void IRAM_ATTR push_frame(const void *frame) {
+  xQueueSend(video_queue_, &frame, portMAX_DELAY);
+}
 
 bool video_task_callback(std::mutex &m, std::condition_variable &cv, bool &task_notified) {
   const void *_frame_ptr;
@@ -885,7 +894,7 @@ bool video_task_callback(std::mutex &m, std::condition_variable &cv, bool &task_
   // special case: if _frame_ptr is null, then we simply fill the screen with 0
   if (_frame_ptr == nullptr) {
     for (int y = 0; y < lcd_height; y += num_lines_to_write) {
-      Pixel *_buf = (Pixel *)((uint32_t)vram0 * (vram_index ^ 0x01) + (uint32_t)vram1 * vram_index);
+      Pixel *_buf = (Pixel *)(vram_index ? vram1 : vram0);
       int num_lines = std::min<int>(num_lines_to_write, lcd_height - y);
       // memset the buffer to 0
       memset(_buf, 0, lcd_width * num_lines * sizeof(Pixel));
@@ -899,8 +908,7 @@ bool video_task_callback(std::mutex &m, std::condition_variable &cv, bool &task_
   }
 
   for (int y = 0; y < lcd_height; y += num_lines_to_write) {
-    uint16_t *_buf =
-        (uint16_t *)((uint32_t)vram0 * (vram_index ^ 0x01) + (uint32_t)vram1 * vram_index);
+    uint16_t *_buf = (uint16_t *)(vram_index ? vram1 : vram0);
     int num_lines = std::min<int>(num_lines_to_write, lcd_height - y);
     const uint16_t *_frame = (const uint16_t *)_frame_ptr;
     for (int i = 0; i < num_lines; i++) {
