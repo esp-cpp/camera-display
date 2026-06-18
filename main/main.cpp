@@ -648,8 +648,8 @@ void configure_audio_playback(const espp::RtspClient &client) {
 
   auto channels = std::max(audio_track_it->channels, 1);
   if (channels > 2) {
-    logger.warn("RTSP audio track {} advertises unsupported channel count {}", audio_track_it->track_id,
-                channels);
+    logger.warn("RTSP audio track {} advertises unsupported channel count {}",
+                audio_track_it->track_id, channels);
     return;
   }
 
