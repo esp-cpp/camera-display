@@ -17,4 +17,4 @@ jobs:
         use_cmake: false
 
         # (Optional) cppcheck args
-        cppcheck_args: --force --enable=all --inline-suppr --inconclusive --platform=mips32 --std=c++17 --suppressions-list=$GITHUB_WORKSPACE/suppressions.txt
+        cppcheck_args: --force --enable=all --check-level=exhaustive --inline-suppr --inconclusive --platform=mips32 --std=c++17 --suppressions-list=$GITHUB_WORKSPACE/suppressions.txt
