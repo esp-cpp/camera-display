@@ -99,9 +99,9 @@ static constexpr bool bsp_supports_touchscreen = false;
 static void set_audio_output_volume(float volume_percent) {
   auto clamped_volume_percent = std::clamp(volume_percent, 0.0f, 100.0f);
   desired_audio_volume_percent = clamped_volume_percent;
-  if constexpr (bsp_supports_pcm_audio_output) {
-    hal::get().volume(clamped_volume_percent);
-  }
+#if CONFIG_HARDWARE_BOX || CONFIG_HARDWARE_TDECK
+  hal::get().volume(clamped_volume_percent);
+#endif
 }
 
 static float get_audio_volume_for_touch_x(uint16_t touch_x) {
@@ -192,6 +192,7 @@ extern "C" void app_main(void) {
   logger.info("Clearing screen");
   clear_screen();
 
+#if CONFIG_HARDWARE_BOX || CONFIG_HARDWARE_TDECK
   if constexpr (bsp_supports_touchscreen && bsp_supports_pcm_audio_output) {
     auto touch_callback = [](const auto &touch) {
       auto &hw = hal::get();
@@ -205,6 +206,7 @@ extern "C" void app_main(void) {
       logger.warn("Could not initialize touch input for audio volume control");
     }
   }
+#endif
 
   // create the parsing and display task
   logger.info("Starting display task");
